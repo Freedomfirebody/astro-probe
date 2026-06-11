@@ -1,0 +1,21 @@
+[package]
+name = "cafebabe"
+version = "0.3.1"
+authors = ["Kartikaya Gupta"]
+edition = "2018"
+license = "0BSD"
+
+description = "A simple parser for Java class files"
+homepage = "https://github.com/staktrace/cafebabe/blob/master/README.md"
+repository = "https://github.com/staktrace/cafebabe"
+readme = "README.md"
+keywords = ["parse", "java", "class", "jvm", "classfile"]
+categories = ["parsing"]
+
+[badges]
+travis-ci = { repository = "staktrace/cafebabe" }
+maintenance = { status = "passively-maintained" }
+
+[dependencies]
+bitflags = "1.0"
+cesu8 = "1.1.0"

@@ -1,0 +1,10 @@
+[package]
+name = "astro-probe-db"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rusqlite = { workspace = true }
+r2d2 = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }

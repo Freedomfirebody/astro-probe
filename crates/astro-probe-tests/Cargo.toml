@@ -1,0 +1,15 @@
+[package]
+name = "astro-probe-tests"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { workspace = true }
+axum = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+rusqlite = { workspace = true }
+astro-probe-server = { path = "../astro-probe-server" }
+astro-probe-db = { path = "../astro-probe-db" }
+astro-probe-core = { path = "../astro-probe-core" }
