@@ -13,3 +13,8 @@ rusqlite = { workspace = true }
 astro-probe-server = { path = "../astro-probe-server" }
 astro-probe-db = { path = "../astro-probe-db" }
 astro-probe-core = { path = "../astro-probe-core" }
+astro-probe-java = { path = "../astro-probe-java" }
+uuid = { workspace = true }
+zip = { workspace = true }
+tempfile = { workspace = true }
+

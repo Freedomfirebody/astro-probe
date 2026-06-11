@@ -15,9 +15,9 @@
     unused_imports
 )]
 
-pub mod parser;
-pub mod jar;
 pub mod di;
+pub mod jar;
+pub mod parser;
 
 #[derive(Debug, thiserror::Error)]
 pub enum JavaError {

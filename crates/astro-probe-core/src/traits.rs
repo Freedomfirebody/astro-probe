@@ -1,6 +1,6 @@
-use std::path::Path;
-use rusqlite::Connection;
 use crate::facts::Fact;
+use rusqlite::Connection;
+use std::path::Path;
 
 pub trait SourceParser {
     type Error: std::error::Error + Send + Sync + 'static;

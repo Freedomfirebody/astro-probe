@@ -1,8 +1,8 @@
-use std::sync::Arc;
-use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader};
-use serde_json::{json, Value};
 use crate::kernel::WorkspaceManager;
 use crate::mcp::schema::{JsonRpcRequest, JsonRpcResponse};
+use serde_json::{json, Value};
+use std::sync::Arc;
+use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 pub struct McpServer {
     manager: Arc<WorkspaceManager>,
@@ -34,7 +34,11 @@ impl McpServer {
         let req: JsonRpcRequest = match serde_json::from_str(line) {
             Ok(r) => r,
             Err(e) => {
-                return Some(JsonRpcResponse::error(None, -32700, &format!("Parse error: {}", e)));
+                return Some(JsonRpcResponse::error(
+                    None,
+                    -32700,
+                    &format!("Parse error: {}", e),
+                ));
             }
         };
 
@@ -144,11 +148,23 @@ impl McpServer {
             "tools/call" => {
                 let params = match req.params {
                     Some(ref p) => p,
-                    None => return Some(JsonRpcResponse::error(req.id.clone(), -32602, "Missing parameters")),
+                    None => {
+                        return Some(JsonRpcResponse::error(
+                            req.id.clone(),
+                            -32602,
+                            "Missing parameters",
+                        ))
+                    }
                 };
                 let tool_name = match params.get("name").and_then(|v| v.as_str()) {
                     Some(n) => n,
-                    None => return Some(JsonRpcResponse::error(req.id.clone(), -32602, "Missing tool name")),
+                    None => {
+                        return Some(JsonRpcResponse::error(
+                            req.id.clone(),
+                            -32602,
+                            "Missing tool name",
+                        ))
+                    }
                 };
                 let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
@@ -157,9 +173,11 @@ impl McpServer {
                     Err(err_msg) => JsonRpcResponse::error(req.id.clone(), -32603, &err_msg),
                 }
             }
-            _ => {
-                JsonRpcResponse::error(req.id.clone(), -32601, &format!("Method not found: {}", method))
-            }
+            _ => JsonRpcResponse::error(
+                req.id.clone(),
+                -32601,
+                &format!("Method not found: {}", method),
+            ),
         };
 
         if is_notification {
@@ -172,12 +190,19 @@ impl McpServer {
     async fn handle_tool_call(&self, name: &str, args: Value) -> Result<Value, String> {
         match name {
             "workspace_create" => {
-                let name_param = args.get("name").and_then(|v| v.as_str())
+                let name_param = args
+                    .get("name")
+                    .and_then(|v| v.as_str())
                     .ok_or_else(|| "Missing required parameter: name".to_string())?;
-                let path_param = args.get("project_path").and_then(|v| v.as_str())
+                let path_param = args
+                    .get("project_path")
+                    .and_then(|v| v.as_str())
                     .ok_or_else(|| "Missing required parameter: project_path".to_string())?;
 
-                match self.manager.create_workspace(name_param.to_string(), path_param.to_string()) {
+                match self
+                    .manager
+                    .create_workspace(name_param.to_string(), path_param.to_string())
+                {
                     Ok(ws) => Ok(json!({
                         "content": [
                             {
@@ -201,7 +226,9 @@ impl McpServer {
                 }))
             }
             "workspace_delete" => {
-                let id_param = args.get("id").and_then(|v| v.as_str())
+                let id_param = args
+                    .get("id")
+                    .and_then(|v| v.as_str())
                     .ok_or_else(|| "Missing required parameter: id".to_string())?;
 
                 let success = self.manager.delete_workspace(id_param);
@@ -215,7 +242,9 @@ impl McpServer {
                 }))
             }
             "workspace_start" => {
-                let id_param = args.get("id").and_then(|v| v.as_str())
+                let id_param = args
+                    .get("id")
+                    .and_then(|v| v.as_str())
                     .ok_or_else(|| "Missing required parameter: id".to_string())?;
 
                 match self.manager.start_workspace(id_param) {
@@ -231,7 +260,9 @@ impl McpServer {
                 }
             }
             "workspace_stop" => {
-                let id_param = args.get("id").and_then(|v| v.as_str())
+                let id_param = args
+                    .get("id")
+                    .and_then(|v| v.as_str())
                     .ok_or_else(|| "Missing required parameter: id".to_string())?;
 
                 match self.manager.stop_workspace(id_param) {
@@ -247,17 +278,26 @@ impl McpServer {
                 }
             }
             "query_call_graph" => {
-                let workspace_id = args.get("workspace_id").and_then(|v| v.as_str())
+                let workspace_id = args
+                    .get("workspace_id")
+                    .and_then(|v| v.as_str())
                     .ok_or_else(|| "Missing required parameter: workspace_id".to_string())?;
-                let method = args.get("method").and_then(|v| v.as_str())
+                let method = args
+                    .get("method")
+                    .and_then(|v| v.as_str())
                     .ok_or_else(|| "Missing required parameter: method".to_string())?;
-                let direction = args.get("direction").and_then(|v| v.as_str())
+                let direction = args
+                    .get("direction")
+                    .and_then(|v| v.as_str())
                     .ok_or_else(|| "Missing required parameter: direction".to_string())?;
 
-                let pool = self.manager.get_db_pool_and_touch(workspace_id)
+                let pool = self
+                    .manager
+                    .get_db_pool_and_touch(workspace_id)
                     .ok_or_else(|| "Workspace not found".to_string())?;
 
-                let conn = pool.get()
+                let conn = pool
+                    .get()
                     .map_err(|e| format!("Failed to get DB connection: {}", e))?;
 
                 let sql = if direction == "incoming" {
@@ -266,19 +306,22 @@ impl McpServer {
                     "SELECT caller, callee, is_virtual FROM call_edges WHERE caller = ?1"
                 };
 
-                let mut stmt = conn.prepare(sql)
+                let mut stmt = conn
+                    .prepare(sql)
                     .map_err(|e| format!("Failed to prepare SQL: {}", e))?;
 
-                let edges_iter = stmt.query_map([method], |row| {
-                    let caller: String = row.get(0)?;
-                    let callee: String = row.get(1)?;
-                    let is_virtual_int: i32 = row.get(2)?;
-                    Ok(json!({
-                        "caller": caller,
-                        "callee": callee,
-                        "is_virtual": is_virtual_int != 0
-                    }))
-                }).map_err(|e| format!("Failed to execute SQL: {}", e))?;
+                let edges_iter = stmt
+                    .query_map([method], |row| {
+                        let caller: String = row.get(0)?;
+                        let callee: String = row.get(1)?;
+                        let is_virtual_int: i32 = row.get(2)?;
+                        Ok(json!({
+                            "caller": caller,
+                            "callee": callee,
+                            "is_virtual": is_virtual_int != 0
+                        }))
+                    })
+                    .map_err(|e| format!("Failed to execute SQL: {}", e))?;
 
                 let mut edges = Vec::new();
                 for edge in edges_iter.flatten() {
@@ -299,30 +342,37 @@ impl McpServer {
                 }))
             }
             "query_lineage" => {
-                let workspace_id = args.get("workspace_id").and_then(|v| v.as_str())
+                let workspace_id = args
+                    .get("workspace_id")
+                    .and_then(|v| v.as_str())
                     .ok_or_else(|| "Missing required parameter: workspace_id".to_string())?;
-                let node = args.get("node").and_then(|v| v.as_str())
+                let node = args
+                    .get("node")
+                    .and_then(|v| v.as_str())
                     .ok_or_else(|| "Missing required parameter: node".to_string())?;
-                let direction = args.get("direction").and_then(|v| v.as_str())
+                let direction = args
+                    .get("direction")
+                    .and_then(|v| v.as_str())
                     .ok_or_else(|| "Missing required parameter: direction".to_string())?;
 
-                let pool = self.manager.get_db_pool_and_touch(workspace_id)
+                let pool = self
+                    .manager
+                    .get_db_pool_and_touch(workspace_id)
                     .ok_or_else(|| "Workspace not found".to_string())?;
 
-                let conn = pool.get()
+                let conn = pool
+                    .get()
                     .map_err(|e| format!("Failed to get DB connection: {}", e))?;
 
                 match crate::api::handlers::query_lineage_internal(&conn, node, direction) {
-                    Ok(resp) => {
-                        Ok(json!({
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": serde_json::to_string(&resp).unwrap()
-                                }
-                            ]
-                        }))
-                    }
+                    Ok(resp) => Ok(json!({
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": serde_json::to_string(&resp).unwrap()
+                            }
+                        ]
+                    })),
                     Err(e) => Err(format!("Lineage query failed: {}", e)),
                 }
             }

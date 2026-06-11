@@ -1,12 +1,12 @@
+use crate::{JavaError, Result};
+use astro_probe_core::facts::{
+    AllocationFact, AssignmentFact, CallArgumentFact, CallSiteFact, ClassAnnotationFact, ClassFact,
+    Fact, FieldAnnotationFact, HierarchyFact, LibraryClassFact, MethodAnnotationFact, MethodFact,
+    ParameterAnnotationFact,
+};
+use astro_probe_core::traits::SourceParser;
 use std::collections::HashMap;
 use std::path::Path;
-use crate::{JavaError, Result};
-use astro_probe_core::traits::SourceParser;
-use astro_probe_core::facts::{
-    Fact, ClassFact, HierarchyFact, MethodFact, AllocationFact, AssignmentFact, CallSiteFact,
-    CallArgumentFact, ClassAnnotationFact, FieldAnnotationFact, MethodAnnotationFact,
-    ParameterAnnotationFact, LibraryClassFact,
-};
 
 pub struct JavaParser;
 
@@ -53,7 +53,9 @@ impl SourceParser for JavaParser {
         }
 
         // 3. Method Declarations
-        let mut stmt = temp_conn.prepare("SELECT method_fqn, class_fqn, method_name, params FROM method_declarations")?;
+        let mut stmt = temp_conn.prepare(
+            "SELECT method_fqn, class_fqn, method_name, params FROM method_declarations",
+        )?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             facts.push(Fact::Method(MethodFact {
@@ -65,7 +67,8 @@ impl SourceParser for JavaParser {
         }
 
         // 4. Allocation Sites
-        let mut stmt = temp_conn.prepare("SELECT alloc_id, class_fqn, method_fqn FROM allocation_sites")?;
+        let mut stmt =
+            temp_conn.prepare("SELECT alloc_id, class_fqn, method_fqn FROM allocation_sites")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             facts.push(Fact::Allocation(AllocationFact {
@@ -76,7 +79,8 @@ impl SourceParser for JavaParser {
         }
 
         // 5. Source Assignments
-        let mut stmt = temp_conn.prepare("SELECT lhs, rhs, assignment_type, method_fqn FROM source_assignments")?;
+        let mut stmt = temp_conn
+            .prepare("SELECT lhs, rhs, assignment_type, method_fqn FROM source_assignments")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             facts.push(Fact::Assignment(AssignmentFact {
@@ -88,7 +92,9 @@ impl SourceParser for JavaParser {
         }
 
         // 6. Call Sites
-        let mut stmt = temp_conn.prepare("SELECT call_id, method_fqn, receiver, method_name, lhs, static_callee FROM call_sites")?;
+        let mut stmt = temp_conn.prepare(
+            "SELECT call_id, method_fqn, receiver, method_name, lhs, static_callee FROM call_sites",
+        )?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             facts.push(Fact::CallSite(CallSiteFact {
@@ -102,7 +108,8 @@ impl SourceParser for JavaParser {
         }
 
         // 7. Call Arguments
-        let mut stmt = temp_conn.prepare("SELECT call_id, arg_index, arg_var, arg_type FROM call_arguments")?;
+        let mut stmt = temp_conn
+            .prepare("SELECT call_id, arg_index, arg_var, arg_type FROM call_arguments")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             facts.push(Fact::CallArgument(CallArgumentFact {
@@ -114,7 +121,8 @@ impl SourceParser for JavaParser {
         }
 
         // 8. Class Annotations
-        let mut stmt = temp_conn.prepare("SELECT class_fqn, annotation_name FROM class_annotations")?;
+        let mut stmt =
+            temp_conn.prepare("SELECT class_fqn, annotation_name FROM class_annotations")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             facts.push(Fact::ClassAnnotation(ClassAnnotationFact {
@@ -124,7 +132,8 @@ impl SourceParser for JavaParser {
         }
 
         // 9. Field Annotations
-        let mut stmt = temp_conn.prepare("SELECT class_fqn, field_name, annotation_name FROM field_annotations")?;
+        let mut stmt = temp_conn
+            .prepare("SELECT class_fqn, field_name, annotation_name FROM field_annotations")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             facts.push(Fact::FieldAnnotation(FieldAnnotationFact {
@@ -135,7 +144,8 @@ impl SourceParser for JavaParser {
         }
 
         // 10. Method Annotations
-        let mut stmt = temp_conn.prepare("SELECT method_fqn, annotation_name FROM method_annotations")?;
+        let mut stmt =
+            temp_conn.prepare("SELECT method_fqn, annotation_name FROM method_annotations")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             facts.push(Fact::MethodAnnotation(MethodAnnotationFact {
@@ -145,7 +155,9 @@ impl SourceParser for JavaParser {
         }
 
         // 11. Parameter Annotations
-        let mut stmt = temp_conn.prepare("SELECT method_fqn, parameter_name, annotation_name FROM parameter_annotations")?;
+        let mut stmt = temp_conn.prepare(
+            "SELECT method_fqn, parameter_name, annotation_name FROM parameter_annotations",
+        )?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             facts.push(Fact::ParameterAnnotation(ParameterAnnotationFact {
@@ -159,9 +171,7 @@ impl SourceParser for JavaParser {
         let mut stmt = temp_conn.prepare("SELECT fqn FROM library_classes")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            facts.push(Fact::LibraryClass(LibraryClassFact {
-                fqn: row.get(0)?,
-            }));
+            facts.push(Fact::LibraryClass(LibraryClassFact { fqn: row.get(0)? }));
         }
 
         Ok(facts)
@@ -197,25 +207,248 @@ struct MethodCallInfo {
 }
 
 impl JavaParser {
-    pub fn parse_and_populate<P: AsRef<Path>>(&self, project_path: P, conn: &rusqlite::Connection) -> Result<()> {
+    pub fn parse_and_populate<P: AsRef<Path>>(
+        &self,
+        project_path: P,
+        conn: &rusqlite::Connection,
+    ) -> Result<()> {
         let files = find_java_files(project_path.as_ref());
-        println!("parse_and_populate: project_path = {:?}, files found = {}", project_path.as_ref(), files.len());
-        let mut classes = Vec::new();
+        println!(
+            "parse_and_populate: project_path = {:?}, files found = {}",
+            project_path.as_ref(),
+            files.len()
+        );
 
+        // 1. Compute hashes for current files on disk
+        let mut on_disk_hashes = HashMap::new();
         for file in &files {
-            if let Ok(content) = std::fs::read_to_string(file) {
-                let stripped = strip_comments(&content);
-                let (pkg, imports, name, kind, body, parents) = parse_package_and_imports(&stripped);
-                println!("file: {:?}, name = '{}', pkg = '{}', body_len = {}", file, name, pkg, body.len());
-                if !name.is_empty() {
-                    let chars: Vec<char> = stripped.chars().collect();
-                    collect_classes_recursive(&chars, "", &pkg, &imports, &mut classes);
+            let path_str = file.to_string_lossy().to_string();
+            if let Ok(hash) = compute_file_hash(file) {
+                on_disk_hashes.insert(path_str, hash);
+            }
+        }
+
+        // 2. Load existing file hashes from the database
+        let mut stored_hashes = HashMap::new();
+        let table_exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='file_hashes')",
+            [],
+            |row| row.get(0),
+        ).unwrap_or(false);
+
+        if table_exists {
+            let mut stmt = conn.prepare("SELECT file_path, hash FROM file_hashes")?;
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                let path: String = row.get(0)?;
+                let hash: String = row.get(1)?;
+                stored_hashes.insert(path, hash);
+            }
+        }
+
+        // 3. Identify dirty, new, and deleted files
+        let mut dirty_files = Vec::new();
+        let mut new_files = Vec::new();
+        let mut deleted_files = Vec::new();
+
+        for (path_str, hash) in &on_disk_hashes {
+            if let Some(stored_hash) = stored_hashes.get(path_str) {
+                if stored_hash != hash {
+                    dirty_files.push(path_str.clone());
+                }
+            } else {
+                new_files.push(path_str.clone());
+            }
+        }
+
+        for path_str in stored_hashes.keys() {
+            if !on_disk_hashes.contains_key(path_str) {
+                deleted_files.push(path_str.clone());
+            }
+        }
+
+        // 4. For each dirty or deleted file, retrieve classes previously defined in them
+        let mut classes_to_purge = std::collections::HashSet::new();
+        if table_exists {
+            let has_metadata: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='file_facts_metadata')",
+                [],
+                |row| row.get(0),
+            ).unwrap_or(false);
+
+            if has_metadata {
+                for file_path in dirty_files.iter().chain(deleted_files.iter()) {
+                    let mut stmt = conn.prepare(
+                        "SELECT class_fqn FROM file_facts_metadata WHERE file_path = ?1",
+                    )?;
+                    let mut rows = stmt.query([file_path])?;
+                    while let Some(row) = rows.next()? {
+                        let fqn: String = row.get(0)?;
+                        classes_to_purge.insert(fqn);
+                    }
                 }
             }
         }
 
-        // Map class simple name to FQN
+        // 5. Purge old facts from the database for these classes and their methods
+        if !classes_to_purge.is_empty() {
+            conn.execute("BEGIN IMMEDIATE TRANSACTION;", [])?;
+            let purge_res = (|| -> Result<()> {
+                // Find all methods for classes to purge
+                let mut methods_to_purge = std::collections::HashSet::new();
+                for class_fqn in &classes_to_purge {
+                    let mut stmt = conn.prepare(
+                        "SELECT method_fqn FROM method_declarations WHERE class_fqn = ?1",
+                    )?;
+                    let mut rows = stmt.query([class_fqn])?;
+                    while let Some(row) = rows.next()? {
+                        let m_fqn: String = row.get(0)?;
+                        methods_to_purge.insert(m_fqn);
+                    }
+                }
+
+                // Delete from all tables as per rules
+                for class_fqn in &classes_to_purge {
+                    let class_prefix = format!("{}.", class_fqn);
+                    let class_prefix_like = format!("{}%", class_prefix);
+
+                    conn.execute("DELETE FROM classes WHERE fqn = ?1", [class_fqn])?;
+                    conn.execute(
+                        "DELETE FROM class_hierarchy WHERE class_fqn = ?1 OR parent_fqn = ?1",
+                        [class_fqn],
+                    )?;
+                    conn.execute(
+                        "DELETE FROM method_declarations WHERE class_fqn = ?1",
+                        [class_fqn],
+                    )?;
+                    conn.execute(
+                        "DELETE FROM allocation_sites WHERE class_fqn = ?1",
+                        [class_fqn],
+                    )?;
+
+                    // Delete from source_assignments, call_sites, call_arguments
+                    // Locate call_ids for call sites of methods to delete
+                    let mut call_ids = Vec::new();
+                    {
+                        let mut stmt = conn.prepare("SELECT call_id FROM call_sites WHERE method_fqn = ?1 OR method_fqn LIKE ?2")?;
+                        let mut rows = stmt.query([class_fqn, &class_prefix_like])?;
+                        while let Some(row) = rows.next()? {
+                            let cid: String = row.get(0)?;
+                            call_ids.push(cid);
+                        }
+                    }
+                    for cid in call_ids {
+                        conn.execute("DELETE FROM call_arguments WHERE call_id = ?1", [&cid])?;
+                    }
+
+                    conn.execute("DELETE FROM source_assignments WHERE method_fqn = ?1 OR method_fqn LIKE ?2", [class_fqn, &class_prefix_like])?;
+                    conn.execute(
+                        "DELETE FROM call_sites WHERE method_fqn = ?1 OR method_fqn LIKE ?2",
+                        [class_fqn, &class_prefix_like],
+                    )?;
+                    conn.execute(
+                        "DELETE FROM class_annotations WHERE class_fqn = ?1",
+                        [class_fqn],
+                    )?;
+                    conn.execute(
+                        "DELETE FROM field_annotations WHERE class_fqn = ?1",
+                        [class_fqn],
+                    )?;
+                    conn.execute("DELETE FROM method_annotations WHERE method_fqn = ?1 OR method_fqn LIKE ?2", [class_fqn, &class_prefix_like])?;
+                    conn.execute("DELETE FROM parameter_annotations WHERE method_fqn = ?1 OR method_fqn LIKE ?2", [class_fqn, &class_prefix_like])?;
+                }
+
+                for file_path in dirty_files.iter().chain(deleted_files.iter()) {
+                    conn.execute(
+                        "DELETE FROM file_facts_metadata WHERE file_path = ?1",
+                        [file_path],
+                    )?;
+                    conn.execute("DELETE FROM file_hashes WHERE file_path = ?1", [file_path])?;
+                }
+
+                Ok(())
+            })();
+
+            if purge_res.is_ok() {
+                conn.execute("COMMIT;", [])?;
+            } else {
+                let _ = conn.execute("ROLLBACK;", []);
+                return purge_res;
+            }
+        }
+
+        // 6. Pre-populate Type Resolution
         let mut workspace_classes = HashMap::new();
+        let has_classes_table = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='classes')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+
+        if has_classes_table {
+            let mut stmt = conn.prepare("SELECT fqn FROM classes")?;
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                let fqn: String = row.get(0)?;
+                if !classes_to_purge.contains(&fqn) {
+                    let simple_name = if let Some(idx) = fqn.rfind('.') {
+                        &fqn[idx + 1..]
+                    } else {
+                        &fqn
+                    };
+                    workspace_classes.insert(simple_name.to_string(), fqn.clone());
+                    if let Some(idx) = simple_name.rfind('$') {
+                        let inner_simple = &simple_name[idx + 1..];
+                        workspace_classes.insert(inner_simple.to_string(), fqn.clone());
+                    }
+                }
+            }
+        }
+
+        // 7. Parse only the dirty and new files
+        let mut classes = Vec::new();
+        let files_to_parse: Vec<String> = dirty_files
+            .iter()
+            .chain(new_files.iter())
+            .cloned()
+            .collect();
+        let mut file_to_classes: HashMap<String, Vec<String>> = HashMap::new();
+
+        for file_path_str in &files_to_parse {
+            let file_path = Path::new(file_path_str);
+            if let Ok(content) = std::fs::read_to_string(file_path) {
+                let stripped = strip_comments(&content);
+                let (pkg, imports, name, kind, body, parents) =
+                    parse_package_and_imports(&stripped);
+                println!(
+                    "file: {:?}, name = '{}', pkg = '{}', body_len = {}",
+                    file_path,
+                    name,
+                    pkg,
+                    body.len()
+                );
+                if !name.is_empty() {
+                    let chars: Vec<char> = stripped.chars().collect();
+                    let start_len = classes.len();
+                    collect_classes_recursive(&chars, "", &pkg, &imports, &mut classes);
+
+                    let mut file_classes = Vec::new();
+                    for class in &classes[start_len..] {
+                        let fqn = if class.package_name.is_empty() {
+                            class.class_name.clone()
+                        } else {
+                            format!("{}.{}", class.package_name, class.class_name)
+                        };
+                        file_classes.push(fqn);
+                    }
+                    file_to_classes.insert(file_path_str.clone(), file_classes);
+                }
+            }
+        }
+
+        // Update workspace classes mapping with newly parsed ones
         for class in &classes {
             let fqn = if class.package_name.is_empty() {
                 class.class_name.clone()
@@ -223,14 +456,14 @@ impl JavaParser {
                 format!("{}.{}", class.package_name, class.class_name)
             };
             workspace_classes.insert(class.class_name.clone(), fqn.clone());
-            // Insert inner classes simple names
             if let Some(idx) = class.class_name.rfind('$') {
                 let simple = &class.class_name[idx + 1..];
                 workspace_classes.insert(simple.to_string(), fqn);
             }
         }
 
-        let _ = conn.execute("BEGIN IMMEDIATE TRANSACTION;", []);
+        // 8. Store populated facts in the database
+        conn.execute("BEGIN IMMEDIATE TRANSACTION;", [])?;
         let populate_res = (|| -> Result<()> {
             for class in &classes {
                 let fqn = if class.package_name.is_empty() {
@@ -238,7 +471,11 @@ impl JavaParser {
                 } else {
                     format!("{}.{}", class.package_name, class.class_name)
                 };
-                let kind = if class.is_interface { "interface" } else { "class" };
+                let kind = if class.is_interface {
+                    "interface"
+                } else {
+                    "class"
+                };
 
                 conn.execute(
                     "INSERT OR REPLACE INTO classes (fqn, kind) VALUES (?1, ?2)",
@@ -271,23 +508,31 @@ impl JavaParser {
                 }
 
                 // Field annotations
-                let class_body_stripped = strip_comments(&class.class_name); // dummy
-                let parsed_fields_anns = parse_fields_annotations_from_body(&class_body_stripped); // not fully implemented, use custom string extractor
-                
-                // Track method local allocations counter
+                let _class_body_stripped = strip_comments(&class.class_name);
+
                 let mut alloc_counter = 0;
 
                 for method in &class.methods {
                     let param_types = split_parameters(&method.signature);
-                    let clean_param_types: Vec<String> = param_types.iter()
-                        .map(|t| resolve_type_fqn(t, class, &workspace_classes))
+                    let clean_param_types: Vec<String> = param_types
+                        .iter()
+                        .map(|t| {
+                            let extracted_type = if let Some((_, ty)) = extract_type_and_name(t) {
+                                ty
+                            } else {
+                                t.clone()
+                            };
+                            resolve_type_fqn(&extracted_type, class, &workspace_classes)
+                        })
                         .collect();
 
-                    let param_names = extract_parameters_ordered(&method.body); // order matches signature
-                    
+                    let param_names =
+                        extract_parameters_ordered(&format!("({})", method.signature));
+
                     let params_signature = clean_param_types.join(",");
-                    let method_fqn = format!("{}.{}({})", fqn, method.method_name, params_signature);
-                    
+                    let method_fqn =
+                        format!("{}.{}({})", fqn, method.method_name, params_signature);
+
                     let param_names_str = param_names.join(",");
                     conn.execute(
                         "INSERT OR REPLACE INTO method_declarations (method_fqn, class_fqn, method_name, params) VALUES (?1, ?2, ?3, ?4)",
@@ -308,14 +553,12 @@ impl JavaParser {
                         )?;
                     }
 
-                    // Intra-procedural dataflow facts extraction
                     let mut local_vars = extract_local_variables(&method.body);
                     let method_params = extract_parameters(&format!("({})", method.signature));
                     for (p_name, p_type) in method_params {
                         local_vars.insert(p_name, p_type);
                     }
 
-                    // Map parameter indexes to names for copy flow: method#pX = method#param_name
                     for (idx, p_name) in param_names.iter().enumerate() {
                         let param_node = format!("{}#{}", method_fqn, p_name);
                         let pos_node = format!("{}#p{}", method_fqn, idx);
@@ -325,24 +568,63 @@ impl JavaParser {
                         )?;
                     }
 
-                    // Process statements in method body to extract allocations, copies, calls
                     let statements = split_statements(&method.body);
                     for stmt in statements {
-                        let preprocessed = preprocess_statement(&stmt, &method_fqn, &mut alloc_counter, conn, class, &workspace_classes, &mut local_vars);
+                        let preprocessed = preprocess_statement(
+                            &stmt,
+                            &method_fqn,
+                            &mut alloc_counter,
+                            conn,
+                            class,
+                            &workspace_classes,
+                            &mut local_vars,
+                        );
                         for prep_stmt in preprocessed {
-                            if let Err(e) = process_rhs_expression_wrapper(&prep_stmt, &method_fqn, &mut alloc_counter, conn, class, &workspace_classes, &local_vars, &fields_map) {
-                                // Skip statement gracefully if it fails parsing logic
-                                tracing::debug!("Failed parsing statement: {} error: {:?}", prep_stmt, e);
+                            if let Err(e) = process_rhs_expression_wrapper(
+                                &prep_stmt,
+                                &method_fqn,
+                                &mut alloc_counter,
+                                conn,
+                                class,
+                                &workspace_classes,
+                                &local_vars,
+                                &fields_map,
+                            ) {
+                                tracing::debug!(
+                                    "Failed parsing statement: {} error: {:?}",
+                                    prep_stmt,
+                                    e
+                                );
                             }
                         }
                     }
                 }
             }
+
+            // 9. Update file_hashes and file_facts_metadata for the newly parsed files
+            for file_path in &files_to_parse {
+                if let Some(hash) = on_disk_hashes.get(file_path) {
+                    conn.execute(
+                        "INSERT OR REPLACE INTO file_hashes (file_path, hash) VALUES (?1, ?2)",
+                        [file_path, hash],
+                    )?;
+                }
+
+                if let Some(classes_in_file) = file_to_classes.get(file_path) {
+                    for class_fqn in classes_in_file {
+                        conn.execute(
+                            "INSERT OR REPLACE INTO file_facts_metadata (file_path, class_fqn) VALUES (?1, ?2)",
+                            [file_path, class_fqn],
+                        )?;
+                    }
+                }
+            }
+
             Ok(())
         })();
 
         if populate_res.is_ok() {
-            let _ = conn.execute("COMMIT;", []);
+            conn.execute("COMMIT;", [])?;
             Ok(())
         } else {
             let _ = conn.execute("ROLLBACK;", []);
@@ -362,16 +644,45 @@ fn process_rhs_expression_wrapper(
     fields_map: &HashMap<String, String>,
 ) -> Result<()> {
     if let Some((lhs, rhs)) = split_assignment(stmt) {
-        process_rhs_expression(&lhs, &rhs, caller_fqn, alloc_counter, conn, class, workspace_classes, local_vars, fields_map)?;
+        process_rhs_expression(
+            &lhs,
+            &rhs,
+            caller_fqn,
+            alloc_counter,
+            conn,
+            class,
+            workspace_classes,
+            local_vars,
+            fields_map,
+        )?;
     } else if starts_with_keyword(stmt, "return") {
         let expr = stmt.strip_prefix("return").unwrap().trim();
         if !expr.is_empty() {
             let ret_var = format!("{}#return", caller_fqn);
             if expr.contains('(') {
                 // Call site directly inside return statement
-                process_rhs_expression(&ret_var, expr, caller_fqn, alloc_counter, conn, class, workspace_classes, local_vars, fields_map)?;
+                process_rhs_expression(
+                    &ret_var,
+                    expr,
+                    caller_fqn,
+                    alloc_counter,
+                    conn,
+                    class,
+                    workspace_classes,
+                    local_vars,
+                    fields_map,
+                )?;
             } else {
-                let simple = resolve_to_simple_var(expr, caller_fqn, alloc_counter, conn, class, workspace_classes, local_vars, fields_map)?;
+                let simple = resolve_to_simple_var(
+                    expr,
+                    caller_fqn,
+                    alloc_counter,
+                    conn,
+                    class,
+                    workspace_classes,
+                    local_vars,
+                    fields_map,
+                )?;
                 conn.execute(
                     "INSERT INTO source_assignments (lhs, rhs, assignment_type, method_fqn) VALUES (?1, ?2, 'COPY', ?3)",
                     [&ret_var, &simple, caller_fqn],
@@ -382,7 +693,17 @@ fn process_rhs_expression_wrapper(
         // standalone call expression (e.g. doSomething();)
         let dummy_lhs = format!("temp_void_call_{}", alloc_counter);
         *alloc_counter += 1;
-        process_rhs_expression(&dummy_lhs, stmt, caller_fqn, alloc_counter, conn, class, workspace_classes, local_vars, fields_map)?;
+        process_rhs_expression(
+            &dummy_lhs,
+            stmt,
+            caller_fqn,
+            alloc_counter,
+            conn,
+            class,
+            workspace_classes,
+            local_vars,
+            fields_map,
+        )?;
     }
     Ok(())
 }
@@ -472,7 +793,9 @@ fn strip_comments(code: &str) -> String {
     result
 }
 
-fn parse_package_and_imports(code: &str) -> (String, Vec<String>, String, String, String, Vec<String>) {
+fn parse_package_and_imports(
+    code: &str,
+) -> (String, Vec<String>, String, String, String, Vec<String>) {
     let mut pkg = String::new();
     let mut imports = Vec::new();
     let mut class_name = String::new();
@@ -484,9 +807,15 @@ fn parse_package_and_imports(code: &str) -> (String, Vec<String>, String, String
     for stmt in &statements {
         let trimmed = stmt.trim();
         if trimmed.starts_with("package ") {
-            pkg = trimmed["package ".len()..].replace(';', "").trim().to_string();
+            pkg = trimmed["package ".len()..]
+                .replace(';', "")
+                .trim()
+                .to_string();
         } else if trimmed.starts_with("import ") {
-            let imp = trimmed["import ".len()..].replace(';', "").trim().to_string();
+            let imp = trimmed["import ".len()..]
+                .replace(';', "")
+                .trim()
+                .to_string();
             // Ignore static imports wildcard or sub imports
             imports.push(imp);
         }
@@ -502,9 +831,19 @@ fn parse_package_and_imports(code: &str) -> (String, Vec<String>, String, String
         parents = parse_inheritance(&first.header);
     }
 
-    let resolved_parents = parents.iter().map(|p| resolve_parent_fqn(p, &pkg, &imports)).collect();
+    let resolved_parents = parents
+        .iter()
+        .map(|p| resolve_parent_fqn(p, &pkg, &imports))
+        .collect();
 
-    (pkg, imports, class_name, class_kind, class_body, resolved_parents)
+    (
+        pkg,
+        imports,
+        class_name,
+        class_kind,
+        class_body,
+        resolved_parents,
+    )
 }
 
 fn resolve_parent_fqn(parent: &str, pkg: &str, imports: &[String]) -> String {
@@ -543,8 +882,7 @@ fn parse_class_body(
         }
 
         // Check for annotations at field/method declaration level
-        let preceding = get_preceding_text(&chars, i);
-        let annotations = extract_annotations_from_string(&preceding);
+        let annotations = extract_and_strip_annotations_at(&chars, &mut i);
 
         // Find next semicolon or brace
         let mut sem_idx = None;
@@ -581,14 +919,28 @@ fn parse_class_body(
                     if let Some(matching_brace) = find_matching_brace(&chars, b) {
                         let header: String = chars[i..b].iter().collect();
                         let method_body: String = chars[b + 1..matching_brace].iter().collect();
-                        
+
                         if let Some(m_name) = extract_method_name(&header) {
-                            let is_constructor = m_name == class_fqn || (class_fqn.contains('$') && class_fqn.ends_with(&format!("${}", m_name)));
-                            let clean_m_name = if is_constructor { "<init>".to_string() } else { m_name };
-                            
-                            let start_paren = header.find('(').unwrap_or(0);
-                            let end_paren = header.rfind(')').unwrap_or(header.len());
-                            let signature = header[start_paren + 1..end_paren].to_string();
+                            let is_constructor = m_name == class_fqn
+                                || (class_fqn.contains('$')
+                                    && class_fqn.ends_with(&format!("${}", m_name)));
+                            let clean_m_name = if is_constructor {
+                                "<init>".to_string()
+                            } else {
+                                m_name
+                            };
+
+                            let signature = if let (Some(sp), Some(ep)) =
+                                (header.find('('), header.rfind(')'))
+                            {
+                                if sp < ep {
+                                    header[sp + 1..ep].to_string()
+                                } else {
+                                    String::new()
+                                }
+                            } else {
+                                String::new()
+                            };
 
                             // Parameter annotations
                             let mut param_annotations = Vec::new();
@@ -601,8 +953,16 @@ fn parse_class_body(
                                     }
                                     // FieldType annotation for DI resolution
                                     let clean_type = strip_generics(&p_type);
-                                    let resolved_pt = resolve_type_fqn_simple(&clean_type, package_name, imports, class_fqn);
-                                    param_annotations.push((p_name.clone(), format!("FieldType:{}", resolved_pt)));
+                                    let resolved_pt = resolve_type_fqn_simple(
+                                        &clean_type,
+                                        package_name,
+                                        imports,
+                                        class_fqn,
+                                    );
+                                    param_annotations.push((
+                                        p_name.clone(),
+                                        format!("FieldType:{}", resolved_pt),
+                                    ));
                                 }
                             }
 
@@ -627,11 +987,24 @@ fn parse_class_body(
                     let header: String = chars[i..b].iter().collect();
                     let method_body: String = chars[b + 1..matching_brace].iter().collect();
                     if let Some(m_name) = extract_method_name(&header) {
-                        let is_constructor = m_name == class_fqn || (class_fqn.contains('$') && class_fqn.ends_with(&format!("${}", m_name)));
-                        let clean_m_name = if is_constructor { "<init>".to_string() } else { m_name };
-                        let start_paren = header.find('(').unwrap_or(0);
-                        let end_paren = header.rfind(')').unwrap_or(header.len());
-                        let signature = header[start_paren + 1..end_paren].to_string();
+                        let is_constructor = m_name == class_fqn
+                            || (class_fqn.contains('$')
+                                && class_fqn.ends_with(&format!("${}", m_name)));
+                        let clean_m_name = if is_constructor {
+                            "<init>".to_string()
+                        } else {
+                            m_name
+                        };
+                        let signature =
+                            if let (Some(sp), Some(ep)) = (header.find('('), header.rfind(')')) {
+                                if sp < ep {
+                                    header[sp + 1..ep].to_string()
+                                } else {
+                                    String::new()
+                                }
+                            } else {
+                                String::new()
+                            };
 
                         methods.push(JavaMethodInfo {
                             method_name: clean_m_name,
@@ -656,7 +1029,12 @@ fn parse_class_body(
     (fields, methods)
 }
 
-fn resolve_type_fqn_simple(type_name: &str, package_name: &str, imports: &[String], class_fqn: &str) -> String {
+fn resolve_type_fqn_simple(
+    type_name: &str,
+    package_name: &str,
+    imports: &[String],
+    class_fqn: &str,
+) -> String {
     for imp in imports {
         if imp.ends_with(&format!(".{}", type_name)) {
             return imp.clone();
@@ -684,39 +1062,39 @@ fn extract_type_and_name(decl: &str) -> Option<(String, String)> {
     if decl.is_empty() {
         return None;
     }
-    
+
     let chars: Vec<char> = decl.chars().collect();
     let mut j = chars.len();
-    
+
     // Find the end of the identifier name
     while j > 0 && !chars[j - 1].is_alphanumeric() && chars[j - 1] != '_' && chars[j - 1] != '$' {
         j -= 1;
     }
     let name_end = j;
-    
+
     // Find the start of the identifier name
     while j > 0 && (chars[j - 1].is_alphanumeric() || chars[j - 1] == '_' || chars[j - 1] == '$') {
         j -= 1;
     }
     let name_start = j;
-    
+
     if name_start == name_end {
         return None;
     }
-    
+
     let name: String = chars[name_start..name_end].iter().collect();
     let prefix = chars[..name_start].iter().collect::<String>();
     let prefix_trimmed = prefix.trim();
     if prefix_trimmed.is_empty() {
         return None;
     }
-    
+
     // Scan type backwards tracking generic and array brackets
     let prefix_chars: Vec<char> = prefix_trimmed.chars().collect();
     let mut k = prefix_chars.len();
     let mut bracket_depth: i32 = 0;
     let mut square_bracket_depth: i32 = 0;
-    
+
     while k > 0 {
         let c = prefix_chars[k - 1];
         if c == '>' {
@@ -737,13 +1115,13 @@ fn extract_type_and_name(decl: &str) -> Option<(String, String)> {
             k -= 1;
         }
     }
-    
+
     let ty: String = prefix_chars[k..].iter().collect();
     let ty = ty.trim().to_string();
     if ty.is_empty() {
         return None;
     }
-    
+
     Some((name, ty))
 }
 
@@ -866,7 +1244,7 @@ fn find_matching_paren(s: &str) -> Option<usize> {
 fn clean_statement(s: &str) -> String {
     let cleaned = s.replace('{', " ").replace('}', " ");
     let mut trimmed = cleaned.trim().to_string();
-    
+
     loop {
         let prev = trimmed.clone();
         if trimmed.starts_with("else") {
@@ -929,7 +1307,7 @@ fn extract_local_variables(body: &str) -> HashMap<String, String> {
         if let Some(eq_idx) = part.find('=') {
             part = part[..eq_idx].trim();
         }
-        
+
         if starts_with_keyword(part, "return")
             || starts_with_keyword(part, "throw")
             || starts_with_keyword(part, "assert")
@@ -943,7 +1321,8 @@ fn extract_local_variables(body: &str) -> HashMap<String, String> {
         }
 
         if let Some((name, ty)) = extract_type_and_name(part) {
-            if !is_filtered_keyword(&name) && (!is_filtered_keyword(&ty) || is_primitive_type(&ty)) {
+            if !is_filtered_keyword(&name) && (!is_filtered_keyword(&ty) || is_primitive_type(&ty))
+            {
                 vars.insert(name, ty);
             }
         }
@@ -986,12 +1365,16 @@ fn extract_parameters(header: &str) -> HashMap<String, String> {
     let mut vars = HashMap::new();
     if let Some(start) = header.find('(') {
         if let Some(end) = header.rfind(')') {
-            let params_str = &header[start + 1..end];
-            let params = split_parameters(params_str);
-            for param in params {
-                if let Some((name, ty)) = extract_type_and_name(&param) {
-                    if !is_filtered_keyword(&name) && (!is_filtered_keyword(&ty) || is_primitive_type(&ty)) {
-                        vars.insert(name, ty);
+            if start < end {
+                let params_str = &header[start + 1..end];
+                let params = split_parameters(params_str);
+                for param in params {
+                    if let Some((name, ty)) = extract_type_and_name(&param) {
+                        if !is_filtered_keyword(&name)
+                            && (!is_filtered_keyword(&ty) || is_primitive_type(&ty))
+                        {
+                            vars.insert(name, ty);
+                        }
                     }
                 }
             }
@@ -1008,7 +1391,7 @@ fn get_qualifier_before(chars: &[char], start_idx: usize) -> String {
     let mut qualifier_chars = Vec::new();
     let mut paren_depth: i32 = 0;
     let mut brace_depth: i32 = 0;
-    
+
     while j > 0 {
         let c = chars[j - 1];
         if paren_depth > 0 {
@@ -1040,11 +1423,12 @@ fn get_qualifier_before(chars: &[char], start_idx: usize) -> String {
                 while temp_j > 0 && chars[temp_j - 1].is_whitespace() {
                     temp_j -= 1;
                 }
-                if temp_j >= 3 
-                    && chars[temp_j - 1] == 'w' 
-                    && chars[temp_j - 2] == 'e' 
-                    && chars[temp_j - 3] == 'n' 
-                    && (temp_j == 3 || !chars[temp_j - 4].is_alphanumeric() && chars[temp_j - 4] != '_') 
+                if temp_j >= 3
+                    && chars[temp_j - 1] == 'w'
+                    && chars[temp_j - 2] == 'e'
+                    && chars[temp_j - 3] == 'n'
+                    && (temp_j == 3
+                        || !chars[temp_j - 4].is_alphanumeric() && chars[temp_j - 4] != '_')
                 {
                     qualifier_chars.push(' ');
                     qualifier_chars.push('w');
@@ -1064,23 +1448,77 @@ fn get_qualifier_before(chars: &[char], start_idx: usize) -> String {
 
 fn is_filtered_keyword(name: &str) -> bool {
     let keywords = [
-        "abstract", "assert", "boolean", "break", "byte", "case", "catch", "char", "class",
-        "const", "continue", "default", "do", "double", "else", "enum", "extends", "final",
-        "finally", "float", "for", "goto", "if", "implements", "import", "instanceof", "int",
-        "interface", "long", "native", "new", "package", "private", "protected", "public",
-        "return", "short", "static", "strictfp", "super", "switch", "synchronized", "this",
-        "throw", "throws", "transient", "try", "void", "volatile", "while", "record", "yield",
-        "sealed", "non-sealed", "permits"
+        "abstract",
+        "assert",
+        "boolean",
+        "break",
+        "byte",
+        "case",
+        "catch",
+        "char",
+        "class",
+        "const",
+        "continue",
+        "default",
+        "do",
+        "double",
+        "else",
+        "enum",
+        "extends",
+        "final",
+        "finally",
+        "float",
+        "for",
+        "goto",
+        "if",
+        "implements",
+        "import",
+        "instanceof",
+        "int",
+        "interface",
+        "long",
+        "native",
+        "new",
+        "package",
+        "private",
+        "protected",
+        "public",
+        "return",
+        "short",
+        "static",
+        "strictfp",
+        "super",
+        "switch",
+        "synchronized",
+        "this",
+        "throw",
+        "throws",
+        "transient",
+        "try",
+        "void",
+        "volatile",
+        "while",
+        "record",
+        "yield",
+        "sealed",
+        "non-sealed",
+        "permits",
     ];
     keywords.contains(&name) || name.starts_with("new ")
 }
 
 fn is_primitive_type(s: &str) -> bool {
-    let primitives = ["boolean", "byte", "char", "double", "float", "int", "long", "short", "void"];
+    let primitives = [
+        "boolean", "byte", "char", "double", "float", "int", "long", "short", "void",
+    ];
     primitives.contains(&s)
 }
 
-fn resolve_type_fqn(type_name: &str, class: &JavaClassInfo, workspace_classes: &HashMap<String, String>) -> String {
+fn resolve_type_fqn(
+    type_name: &str,
+    class: &JavaClassInfo,
+    workspace_classes: &HashMap<String, String>,
+) -> String {
     let clean_type_name = if let Some(idx) = type_name.find('<') {
         &type_name[..idx]
     } else {
@@ -1168,7 +1606,7 @@ fn parse_inheritance(header: &str) -> Vec<String> {
     let clean = strip_generics(header).replace(',', " ");
     let tokens: Vec<&str> = clean.split_whitespace().collect();
     let mut parents = Vec::new();
-    
+
     let mut mode = None;
     for &token in &tokens {
         if token == "extends" {
@@ -1195,7 +1633,14 @@ fn find_assignment_eq(s: &str) -> Option<usize> {
             }
             if i > 0 {
                 let prev = chars[i - 1];
-                if prev == '!' || prev == '+' || prev == '-' || prev == '*' || prev == '/' || prev == '<' || prev == '>' {
+                if prev == '!'
+                    || prev == '+'
+                    || prev == '-'
+                    || prev == '*'
+                    || prev == '/'
+                    || prev == '<'
+                    || prev == '>'
+                {
                     i += 1;
                     continue;
                 }
@@ -1213,10 +1658,10 @@ fn parse_call_expr(expr: &str) -> Option<(Option<String>, String, Vec<String>)> 
     let after_paren = expr[idx + 1..].trim();
     let end_paren = after_paren.rfind(')')?;
     let args_str = &after_paren[..end_paren];
-    
+
     let before_paren_tokens: Vec<&str> = before_paren.split_whitespace().collect();
     let last_token = before_paren_tokens.last()?;
-    
+
     let (receiver, method_name) = if let Some(dot_idx) = last_token.rfind('.') {
         let rec = &last_token[..dot_idx];
         let name = &last_token[dot_idx + 1..];
@@ -1224,16 +1669,17 @@ fn parse_call_expr(expr: &str) -> Option<(Option<String>, String, Vec<String>)> 
     } else {
         (None, last_token.to_string())
     };
-    
+
     if is_filtered_keyword(&method_name) {
         return None;
     }
-    
-    let args = split_parameters(args_str).into_iter()
+
+    let args = split_parameters(args_str)
+        .into_iter()
         .map(|a| a.trim().to_string())
         .filter(|a| !a.is_empty())
         .collect();
-    
+
     Some((receiver, method_name, args))
 }
 
@@ -1241,12 +1687,14 @@ fn extract_parameters_ordered(header: &str) -> Vec<String> {
     let mut names = Vec::new();
     if let Some(start) = header.find('(') {
         if let Some(end) = header.rfind(')') {
-            let params_str = &header[start + 1..end];
-            let params = split_parameters(params_str);
-            for param in params {
-                if let Some((name, _ty)) = extract_type_and_name(&param) {
-                    if !is_filtered_keyword(&name) {
-                        names.push(name);
+            if start < end {
+                let params_str = &header[start + 1..end];
+                let params = split_parameters(params_str);
+                for param in params {
+                    if let Some((name, _ty)) = extract_type_and_name(&param) {
+                        if !is_filtered_keyword(&name) {
+                            names.push(name);
+                        }
                     }
                 }
             }
@@ -1259,12 +1707,14 @@ fn extract_parameter_types_and_names(header: &str) -> Vec<(String, String)> {
     let mut result = Vec::new();
     if let Some(start) = header.find('(') {
         if let Some(end) = header.rfind(')') {
-            let params_str = &header[start + 1..end];
-            let params = split_parameters(params_str);
-            for param in params {
-                if let Some((name, ty)) = extract_type_and_name(&param) {
-                    if !is_filtered_keyword(&name) {
-                        result.push((ty, name));
+            if start < end {
+                let params_str = &header[start + 1..end];
+                let params = split_parameters(params_str);
+                for param in params {
+                    if let Some((name, ty)) = extract_type_and_name(&param) {
+                        if !is_filtered_keyword(&name) {
+                            result.push((ty, name));
+                        }
                     }
                 }
             }
@@ -1325,7 +1775,17 @@ fn process_rhs_expression(
             [temp_var_fqn.as_str(), alloc_id.as_str(), caller_fqn],
         )?;
 
-        handle_field_write(lhs_raw, &temp_var_fqn, caller_fqn, alloc_counter, conn, class, workspace_classes, local_vars, fields_map)?;
+        handle_field_write(
+            lhs_raw,
+            &temp_var_fqn,
+            caller_fqn,
+            alloc_counter,
+            conn,
+            class,
+            workspace_classes,
+            local_vars,
+            fields_map,
+        )?;
     } else if let Some((receiver, method_name, args)) = parse_call_expr(rhs_part) {
         let resolved_receiver = match receiver {
             Some(ref rec) => {
@@ -1334,7 +1794,16 @@ fn process_rhs_expression(
                 } else if is_workspace_class(rec, class, workspace_classes) {
                     None
                 } else {
-                    let rec_simple = resolve_to_simple_var(rec, caller_fqn, alloc_counter, conn, class, workspace_classes, local_vars, fields_map)?;
+                    let rec_simple = resolve_to_simple_var(
+                        rec,
+                        caller_fqn,
+                        alloc_counter,
+                        conn,
+                        class,
+                        workspace_classes,
+                        local_vars,
+                        fields_map,
+                    )?;
                     Some(rec_simple)
                 }
             }
@@ -1373,7 +1842,16 @@ fn process_rhs_expression(
         for arg in &args {
             let ty = resolve_expression_type(arg, class, workspace_classes, local_vars, fields_map);
             arg_types.push(ty);
-            let arg_simple = resolve_to_simple_var(arg, caller_fqn, alloc_counter, conn, class, workspace_classes, local_vars, fields_map)?;
+            let arg_simple = resolve_to_simple_var(
+                arg,
+                caller_fqn,
+                alloc_counter,
+                conn,
+                class,
+                workspace_classes,
+                local_vars,
+                fields_map,
+            )?;
             arg_simple_vars.push(arg_simple);
         }
 
@@ -1406,10 +1884,39 @@ fn process_rhs_expression(
             )?;
         }
 
-        handle_field_write(lhs_raw, &temp_lhs_fqn, caller_fqn, alloc_counter, conn, class, workspace_classes, local_vars, fields_map)?;
+        handle_field_write(
+            lhs_raw,
+            &temp_lhs_fqn,
+            caller_fqn,
+            alloc_counter,
+            conn,
+            class,
+            workspace_classes,
+            local_vars,
+            fields_map,
+        )?;
     } else {
-        let rhs_simple_var = resolve_to_simple_var(rhs_part, caller_fqn, alloc_counter, conn, class, workspace_classes, local_vars, fields_map)?;
-        handle_field_write(lhs_raw, &rhs_simple_var, caller_fqn, alloc_counter, conn, class, workspace_classes, local_vars, fields_map)?;
+        let rhs_simple_var = resolve_to_simple_var(
+            rhs_part,
+            caller_fqn,
+            alloc_counter,
+            conn,
+            class,
+            workspace_classes,
+            local_vars,
+            fields_map,
+        )?;
+        handle_field_write(
+            lhs_raw,
+            &rhs_simple_var,
+            caller_fqn,
+            alloc_counter,
+            conn,
+            class,
+            workspace_classes,
+            local_vars,
+            fields_map,
+        )?;
     }
     Ok(())
 }
@@ -1546,7 +2053,11 @@ fn scan_direct_classes(chars: &[char]) -> Vec<FoundClass> {
             if let Some(b_idx) = brace_idx {
                 if let Some(matching_brace_idx) = find_matching_brace(chars, b_idx) {
                     let header: String = chars[i..b_idx].iter().collect();
-                    let kind = if is_interface { "interface".to_string() } else { "class".to_string() };
+                    let kind = if is_interface {
+                        "interface".to_string()
+                    } else {
+                        "class".to_string()
+                    };
                     let name = parse_class_name(&header, if is_interface { 10 } else { 6 });
                     if !name.is_empty() {
                         let body_chars = chars[b_idx + 1..matching_brace_idx].to_vec();
@@ -1585,7 +2096,13 @@ fn collect_classes_recursive(
         };
 
         let mut inner_classes = Vec::new();
-        collect_classes_recursive(&dc.body_chars, &class_name, package_name, imports, &mut inner_classes);
+        collect_classes_recursive(
+            &dc.body_chars,
+            &class_name,
+            package_name,
+            imports,
+            &mut inner_classes,
+        );
 
         let mut cleaned_body_chars = dc.body_chars.clone();
         let direct_inners = scan_direct_classes(&dc.body_chars);
@@ -1598,9 +2115,10 @@ fn collect_classes_recursive(
         let cleaned_body: String = cleaned_body_chars.into_iter().collect();
         let (fields, methods) = parse_class_body(package_name, imports, &class_name, &cleaned_body);
         let parents = parse_inheritance(&dc.header);
-        let resolved_parents = parents.iter().map(|parent| {
-            resolve_parent_fqn(parent, package_name, imports)
-        }).collect();
+        let resolved_parents = parents
+            .iter()
+            .map(|parent| resolve_parent_fqn(parent, package_name, imports))
+            .collect();
 
         let preceding_text = get_preceding_text(chars, dc.start_idx);
         let class_annotations = extract_annotations_from_string(&preceding_text);
@@ -1656,7 +2174,7 @@ fn resolve_expression_type(
         let clean_type = strip_generics(&type_name);
         return resolve_type_fqn(&clean_type, class, workspace_classes);
     }
-    
+
     let var_name = if expr.starts_with("this.") {
         &expr["this.".len()..]
     } else {
@@ -1685,7 +2203,9 @@ fn resolve_to_simple_var(
 ) -> Result<String> {
     let expr = expr.trim();
     if !expr.contains('.') {
-        if fields_map.contains_key(expr) {
+        if local_vars.contains_key(expr) {
+            return Ok(format!("{}#{}", caller_fqn, expr));
+        } else if fields_map.contains_key(expr) {
             let temp_var = format!("temp_field_{}", alloc_counter);
             *alloc_counter += 1;
             let temp_var_fqn = format!("{}#{}", caller_fqn, temp_var);
@@ -1796,6 +2316,58 @@ pub fn strip_signature(method_fqn: &str) -> &str {
     }
 }
 
+fn extract_and_strip_annotations_at(chars: &[char], i: &mut usize) -> Vec<String> {
+    let mut annotations = Vec::new();
+    while *i < chars.len() {
+        // Skip whitespace
+        while *i < chars.len() && chars[*i].is_whitespace() {
+            *i += 1;
+        }
+        if *i < chars.len() && chars[*i] == '@' {
+            let start = *i;
+            *i += 1;
+            let mut name = String::new();
+            while *i < chars.len()
+                && (chars[*i].is_alphanumeric()
+                    || chars[*i] == '_'
+                    || chars[*i] == '$'
+                    || chars[*i] == '.')
+            {
+                name.push(chars[*i]);
+                *i += 1;
+            }
+            if !name.is_empty() {
+                let mut temp = *i;
+                while temp < chars.len() && chars[temp].is_whitespace() {
+                    temp += 1;
+                }
+                if temp < chars.len() && chars[temp] == '(' {
+                    let mut depth = 1;
+                    temp += 1;
+                    while temp < chars.len() && depth > 0 {
+                        if chars[temp] == '(' {
+                            depth += 1;
+                        } else if chars[temp] == ')' {
+                            depth -= 1;
+                        }
+                        temp += 1;
+                    }
+                    *i = temp;
+                } else {
+                    *i = temp;
+                }
+                let annotation_text: String = chars[start..*i].iter().collect();
+                annotations.push(annotation_text.trim().to_string());
+            } else {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+    annotations
+}
+
 pub fn extract_annotations_from_string(s: &str) -> Vec<String> {
     let mut annotations = Vec::new();
     let chars: Vec<char> = s.chars().collect();
@@ -1804,7 +2376,12 @@ pub fn extract_annotations_from_string(s: &str) -> Vec<String> {
         if chars[i] == '@' {
             i += 1;
             let mut name = String::new();
-            while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_' || chars[i] == '$' || chars[i] == '.') {
+            while i < chars.len()
+                && (chars[i].is_alphanumeric()
+                    || chars[i] == '_'
+                    || chars[i] == '$'
+                    || chars[i] == '.')
+            {
                 name.push(chars[i]);
                 i += 1;
             }
@@ -1838,8 +2415,16 @@ pub fn extract_annotations_from_string(s: &str) -> Vec<String> {
                     name
                 };
                 annotations.push(short_name.clone());
-                
-                if (short_name == "Qualifier" || short_name == "Service" || short_name == "Component" || short_name == "Repository" || short_name == "Controller" || short_name == "RestController" || short_name == "Value") && !args.is_empty() {
+
+                if (short_name == "Qualifier"
+                    || short_name == "Service"
+                    || short_name == "Component"
+                    || short_name == "Repository"
+                    || short_name == "Controller"
+                    || short_name == "RestController"
+                    || short_name == "Value")
+                    && !args.is_empty()
+                {
                     let mut val = args.trim().to_string();
                     if val.starts_with("value") {
                         if let Some(eq_idx) = val.find('=') {
@@ -1917,7 +2502,12 @@ fn split_assignment(stmt: &str) -> Option<(String, String)> {
             } else if c == '=' && paren_depth == 0 && bracket_depth == 0 {
                 if i + 1 < chars.len() && chars[i + 1] == '=' {
                     i += 1;
-                } else if i > 0 && (chars[i - 1] == '+' || chars[i - 1] == '-' || chars[i - 1] == '*' || chars[i - 1] == '/') {
+                } else if i > 0
+                    && (chars[i - 1] == '+'
+                        || chars[i - 1] == '-'
+                        || chars[i - 1] == '*'
+                        || chars[i - 1] == '/')
+                {
                     // ignore
                 } else {
                     let lhs: String = chars[..i].iter().collect();
@@ -1940,7 +2530,7 @@ fn split_top_level_dots(expr: &str) -> Vec<String> {
     let mut in_string = false;
     let mut in_char = false;
     let mut in_escape = false;
-    
+
     let mut i = 0;
     while i < chars.len() {
         let c = chars[i];
@@ -2032,11 +2622,11 @@ fn rewrite_symbolic_allocations(
                 temp_i += 1;
             }
             i = temp_i + 1;
-            
+
             let alloc_id = format!("StringAlloc:{}", val_content);
             let temp_var = format!("temp_str_alloc_{}", *alloc_counter);
             *alloc_counter += 1;
-            
+
             let _ = conn.execute(
                 "INSERT OR REPLACE INTO allocation_sites (alloc_id, class_fqn, method_fqn) VALUES (?1, 'java.lang.String', ?2)",
                 [&alloc_id, caller_fqn],
@@ -2049,18 +2639,23 @@ fn rewrite_symbolic_allocations(
             if chars[i].is_alphanumeric() || chars[i] == '_' || chars[i] == '$' {
                 let mut ident = String::new();
                 let mut temp_i = i;
-                while temp_i < chars.len() && (chars[temp_i].is_alphanumeric() || chars[temp_i] == '_' || chars[temp_i] == '$' || chars[temp_i] == '.') {
+                while temp_i < chars.len()
+                    && (chars[temp_i].is_alphanumeric()
+                        || chars[temp_i] == '_'
+                        || chars[temp_i] == '$'
+                        || chars[temp_i] == '.')
+                {
                     ident.push(chars[temp_i]);
                     temp_i += 1;
                 }
                 if ident.ends_with(".class") {
                     let class_part = ident.strip_suffix(".class").unwrap();
                     let resolved_class_fqn = resolve_type_fqn(class_part, class, workspace_classes);
-                    
+
                     let alloc_id = format!("ReflectClassAlloc:{}", resolved_class_fqn);
                     let temp_var = format!("temp_class_alloc_{}", *alloc_counter);
                     *alloc_counter += 1;
-                    
+
                     let _ = conn.execute(
                         "INSERT OR REPLACE INTO allocation_sites (alloc_id, class_fqn, method_fqn) VALUES (?1, 'java.lang.Class', ?2)",
                         [&alloc_id, caller_fqn],
@@ -2094,16 +2689,20 @@ fn preprocess_statement(
     if stmt_trimmed.is_empty() {
         return Vec::new();
     }
-    
+
     let mut new_stmts = Vec::new();
-    
+
     let infer_type = |part: &str| -> String {
         let part_trimmed = part.trim();
         if part_trimmed.starts_with("forName(") {
             "java.lang.Class".to_string()
-        } else if part_trimmed.starts_with("getDeclaredMethod(") || part_trimmed.starts_with("getMethod(") {
+        } else if part_trimmed.starts_with("getDeclaredMethod(")
+            || part_trimmed.starts_with("getMethod(")
+        {
             "java.lang.reflect.Method".to_string()
-        } else if part_trimmed.starts_with("getDeclaredField(") || part_trimmed.starts_with("getField(") {
+        } else if part_trimmed.starts_with("getDeclaredField(")
+            || part_trimmed.starts_with("getField(")
+        {
             "java.lang.reflect.Field".to_string()
         } else if part_trimmed.starts_with("invoke(") {
             "java.lang.Object".to_string()
@@ -2111,9 +2710,18 @@ fn preprocess_statement(
             "java.lang.Object".to_string()
         }
     };
-    
+
     if let Some((lhs, rhs)) = split_assignment(stmt_trimmed) {
-        let rewritten_rhs = rewrite_symbolic_allocations(&rhs, caller_fqn, alloc_counter, &mut new_stmts, conn, class, workspace_classes, local_vars);
+        let rewritten_rhs = rewrite_symbolic_allocations(
+            &rhs,
+            caller_fqn,
+            alloc_counter,
+            &mut new_stmts,
+            conn,
+            class,
+            workspace_classes,
+            local_vars,
+        );
         let parts = split_top_level_dots(&rewritten_rhs);
         if parts.len() > 1 && parts.iter().skip(1).any(|p| p.contains('(')) {
             let mut current_base = parts[0].clone();
@@ -2133,7 +2741,16 @@ fn preprocess_statement(
         }
     } else if starts_with_keyword(stmt_trimmed, "return") {
         let expr = stmt_trimmed.strip_prefix("return").unwrap().trim();
-        let rewritten_expr = rewrite_symbolic_allocations(expr, caller_fqn, alloc_counter, &mut new_stmts, conn, class, workspace_classes, local_vars);
+        let rewritten_expr = rewrite_symbolic_allocations(
+            expr,
+            caller_fqn,
+            alloc_counter,
+            &mut new_stmts,
+            conn,
+            class,
+            workspace_classes,
+            local_vars,
+        );
         let parts = split_top_level_dots(&rewritten_expr);
         if parts.len() > 1 && parts.iter().skip(1).any(|p| p.contains('(')) {
             let mut current_base = parts[0].clone();
@@ -2152,7 +2769,16 @@ fn preprocess_statement(
             new_stmts.push(format!("return {}", rewritten_expr));
         }
     } else {
-        let rewritten_expr = rewrite_symbolic_allocations(stmt_trimmed, caller_fqn, alloc_counter, &mut new_stmts, conn, class, workspace_classes, local_vars);
+        let rewritten_expr = rewrite_symbolic_allocations(
+            stmt_trimmed,
+            caller_fqn,
+            alloc_counter,
+            &mut new_stmts,
+            conn,
+            class,
+            workspace_classes,
+            local_vars,
+        );
         let parts = split_top_level_dots(&rewritten_expr);
         if parts.len() > 1 && parts.iter().skip(1).any(|p| p.contains('(')) {
             let mut current_base = parts[0].clone();
@@ -2171,8 +2797,13 @@ fn preprocess_statement(
             new_stmts.push(rewritten_expr);
         }
     }
-    
+
     new_stmts
+}
+
+fn compute_file_hash(path: &Path) -> std::io::Result<String> {
+    let content = std::fs::read(path)?;
+    Ok(crate::jar::sha256_hash(&content))
 }
 
 #[cfg(test)]
@@ -2275,13 +2906,20 @@ mod tests {
 
     #[test]
     fn test_nested_generics_stress() {
-        let (name, ty) = extract_type_and_name("Map<String, Map<Integer, List<String>>> myMap").unwrap();
+        let (name, ty) =
+            extract_type_and_name("Map<String, Map<Integer, List<String>>> myMap").unwrap();
         assert_eq!(name, "myMap");
         assert_eq!(ty, "Map<String, Map<Integer, List<String>>>");
 
-        let (name2, ty2) = extract_type_and_name("Map<List<Set<Map<String, Integer>>>, Map<String, String>> complexMap").unwrap();
+        let (name2, ty2) = extract_type_and_name(
+            "Map<List<Set<Map<String, Integer>>>, Map<String, String>> complexMap",
+        )
+        .unwrap();
         assert_eq!(name2, "complexMap");
-        assert_eq!(ty2, "Map<List<Set<Map<String, Integer>>>, Map<String, String>>");
+        assert_eq!(
+            ty2,
+            "Map<List<Set<Map<String, Integer>>>, Map<String, String>>"
+        );
     }
 
     #[test]
@@ -2333,6 +2971,9 @@ mod tests {
         assert_eq!(params.len(), 3);
         assert_eq!(params[0], ("String".to_string(), "myParam".to_string()));
         assert_eq!(params[1], ("int".to_string(), "x".to_string()));
-        assert_eq!(params[2], ("Map<String, Integer>".to_string(), "map".to_string()));
+        assert_eq!(
+            params[2],
+            ("Map<String, Integer>".to_string(), "map".to_string())
+        );
     }
 }

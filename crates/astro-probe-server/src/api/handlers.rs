@@ -1,3 +1,4 @@
+use crate::kernel::WorkspaceManager;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -6,7 +7,6 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use crate::kernel::WorkspaceManager;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -75,7 +75,7 @@ pub struct LineageQueryParams {
     pub direction: String,
 }
 
-pub use astro_probe_core::query::{LineageEdge, LineageResponse, query_lineage_internal};
+pub use astro_probe_core::query::{query_lineage_internal, LineageEdge, LineageResponse};
 
 #[derive(Debug, Serialize)]
 pub struct ErrorResponse {
@@ -86,7 +86,10 @@ pub async fn create_workspace(
     State(state): State<AppState>,
     Json(payload): Json<CreateWorkspaceRequest>,
 ) -> impl IntoResponse {
-    match state.manager.create_workspace(payload.name, payload.project_path) {
+    match state
+        .manager
+        .create_workspace(payload.name, payload.project_path)
+    {
         Ok(ws) => {
             let resp = WorkspaceResponse {
                 id: ws.id,
@@ -98,7 +101,10 @@ pub async fn create_workspace(
         }
         Err(e) => {
             let err_msg = e.to_string();
-            let status = if err_msg.contains("NotFound") || err_msg.contains("Invalid") || err_msg.contains("empty") {
+            let status = if err_msg.contains("NotFound")
+                || err_msg.contains("Invalid")
+                || err_msg.contains("empty")
+            {
                 StatusCode::BAD_REQUEST
             } else {
                 StatusCode::INTERNAL_SERVER_ERROR
@@ -129,7 +135,11 @@ pub async fn delete_workspace(
     if success {
         Json(DeleteWorkspaceResponse { success: true }).into_response()
     } else {
-        (StatusCode::NOT_FOUND, Json(DeleteWorkspaceResponse { success: false })).into_response()
+        (
+            StatusCode::NOT_FOUND,
+            Json(DeleteWorkspaceResponse { success: false }),
+        )
+            .into_response()
     }
 }
 
@@ -141,7 +151,8 @@ pub async fn start_workspace(
         Json(StartWorkspaceResponse {
             id: ws.id,
             status: ws.status.to_string(),
-        }).into_response()
+        })
+        .into_response()
     } else {
         StatusCode::NOT_FOUND.into_response()
     }
@@ -155,7 +166,8 @@ pub async fn stop_workspace(
         Json(StopWorkspaceResponse {
             id: ws.id,
             status: ws.status.to_string(),
-        }).into_response()
+        })
+        .into_response()
     } else {
         StatusCode::NOT_FOUND.into_response()
     }
@@ -173,7 +185,13 @@ pub async fn query_call_graph(
 
     let conn = match pool.get() {
         Ok(c) => c,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to get DB connection: {}", e)).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to get DB connection: {}", e),
+            )
+                .into_response()
+        }
     };
 
     let sql = if params.direction == "incoming" {
@@ -184,7 +202,13 @@ pub async fn query_call_graph(
 
     let mut stmt = match conn.prepare(sql) {
         Ok(s) => s,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to prepare SQL: {}", e)).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to prepare SQL: {}", e),
+            )
+                .into_response()
+        }
     };
 
     let edges_iter = match stmt.query_map([&params.method], |row| {
@@ -198,7 +222,13 @@ pub async fn query_call_graph(
         })
     }) {
         Ok(it) => it,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to execute SQL: {}", e)).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to execute SQL: {}", e),
+            )
+                .into_response()
+        }
     };
 
     let mut edges = Vec::new();
@@ -221,11 +251,21 @@ pub async fn query_lineage(
 
     let conn = match pool.get() {
         Ok(c) => c,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to get DB connection: {}", e)).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to get DB connection: {}", e),
+            )
+                .into_response()
+        }
     };
 
     match astro_probe_core::query::query_lineage_internal(&conn, &params.node, &params.direction) {
         Ok(resp) => Json(resp).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Lineage query failed: {}", e)).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Lineage query failed: {}", e),
+        )
+            .into_response(),
     }
 }

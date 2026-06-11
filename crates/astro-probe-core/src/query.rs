@@ -1,7 +1,7 @@
-use std::collections::HashSet;
+use crate::cg::CoreError;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
-use crate::cg::CoreError;
+use std::collections::HashSet;
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct LineageEdge {
@@ -24,13 +24,13 @@ pub fn query_lineage_internal(
 ) -> Result<LineageResponse, CoreError> {
     // 1. Resolve start nodes using exact/suffix matching
     let mut start_nodes = HashSet::new();
-    
+
     // Check exact matches
     {
         let mut check_stmt = conn.prepare(
             "SELECT DISTINCT from_node FROM lineage_edges WHERE from_node = ?1 \
              UNION \
-             SELECT DISTINCT to_node FROM lineage_edges WHERE to_node = ?1"
+             SELECT DISTINCT to_node FROM lineage_edges WHERE to_node = ?1",
         )?;
         let mut rows = check_stmt.query([node_query])?;
         while let Some(row) = rows.next()? {
@@ -51,9 +51,9 @@ pub fn query_lineage_internal(
         let mut rows = check_stmt.query([&pattern, &pattern_dot])?;
         while let Some(row) = rows.next()? {
             let node: String = row.get(0)?;
-            if node == node_query 
-               || node.ends_with(&format!("#{}", node_query)) 
-               || node.ends_with(&format!(".{}", node_query)) 
+            if node == node_query
+                || node.ends_with(&format!("#{}", node_query))
+                || node.ends_with(&format!(".{}", node_query))
             {
                 start_nodes.insert(node);
             }
@@ -71,7 +71,7 @@ pub fn query_lineage_internal(
     // 2. Perform recursive CTE for each resolved start node
     for start_node in &start_nodes {
         nodes_set.insert(start_node.clone());
-        
+
         let sql = if direction == "upstream" {
             "WITH RECURSIVE lineage_dfs(from_node, to_node, edge_type) AS ( \
                  SELECT from_node, to_node, edge_type FROM lineage_edges WHERE to_node = ?1 \
@@ -136,5 +136,8 @@ pub fn query_lineage_internal(
         }
     }
 
-    Ok(LineageResponse { nodes, edges: unique_edges })
+    Ok(LineageResponse {
+        nodes,
+        edges: unique_edges,
+    })
 }

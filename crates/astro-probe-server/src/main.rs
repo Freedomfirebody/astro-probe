@@ -1,9 +1,9 @@
-use std::sync::Arc;
-use clap::Parser;
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
-use astro_probe_server::kernel::WorkspaceManager;
 use astro_probe_server::api::{create_router, AppState};
+use astro_probe_server::kernel::WorkspaceManager;
 use astro_probe_server::mcp::McpServer;
+use clap::Parser;
+use std::sync::Arc;
+use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -25,8 +25,13 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
 
-    let port = args.port
-        .or_else(|| std::env::var("ASTRO_PROBE_PORT").ok().and_then(|v| v.parse().ok()))
+    let port = args
+        .port
+        .or_else(|| {
+            std::env::var("ASTRO_PROBE_PORT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+        })
         .or_else(|| std::env::var("PORT").ok().and_then(|v| v.parse().ok()))
         .unwrap_or(8080);
 

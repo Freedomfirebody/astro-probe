@@ -1,3 +1,3 @@
 pub mod api;
-pub mod mcp;
 pub mod kernel;
+pub mod mcp;

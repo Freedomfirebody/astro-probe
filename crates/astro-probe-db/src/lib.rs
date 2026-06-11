@@ -1,9 +1,9 @@
 #![allow(clippy::type_complexity)]
 
+use r2d2::{ManageConnection, Pool};
 use rusqlite::Result;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use r2d2::{Pool, ManageConnection};
 
 #[derive(Debug, thiserror::Error)]
 pub enum DbError {
@@ -71,24 +71,33 @@ pub type DbPool = Pool<SqliteConnectionManager>;
 pub fn establish_connection<P: AsRef<Path>>(path: P) -> Result<rusqlite::Connection> {
     let conn = rusqlite::Connection::open(path)?;
     conn.busy_timeout(Duration::from_secs(5))?;
+    let journal_mode: String = conn.query_row("PRAGMA journal_mode;", [], |row| row.get(0))?;
+    if journal_mode.to_lowercase() != "wal" {
+        conn.execute_batch("PRAGMA journal_mode = WAL;")?;
+    }
     conn.execute_batch(
-        "PRAGMA journal_mode = WAL;
-         PRAGMA synchronous = NORMAL;"
+        "PRAGMA synchronous = NORMAL;
+         PRAGMA cache_size = -64000;
+         PRAGMA temp_store = MEMORY;",
     )?;
     Ok(conn)
 }
 
 pub fn establish_connection_pool<P: AsRef<Path>>(path: P) -> std::result::Result<DbPool, DbError> {
-    let manager = SqliteConnectionManager::file(path)
-        .with_init(|c| {
-            c.busy_timeout(Duration::from_secs(5))?;
-            c.execute_batch(
-                "PRAGMA journal_mode = WAL;
-                 PRAGMA synchronous = NORMAL;"
-            )?;
-            Ok(())
-        });
-    let pool = Pool::builder().build(manager)?;
+    let manager = SqliteConnectionManager::file(path).with_init(|c| {
+        c.busy_timeout(Duration::from_secs(5))?;
+        let journal_mode: String = c.query_row("PRAGMA journal_mode;", [], |row| row.get(0))?;
+        if journal_mode.to_lowercase() != "wal" {
+            c.execute_batch("PRAGMA journal_mode = WAL;")?;
+        }
+        c.execute_batch(
+            "PRAGMA synchronous = NORMAL;
+             PRAGMA cache_size = -64000;
+             PRAGMA temp_store = MEMORY;",
+        )?;
+        Ok(())
+    });
+    let pool = Pool::builder().max_size(2).build(manager)?;
     Ok(pool)
 }
 
@@ -247,6 +256,34 @@ pub fn init_db(conn: &rusqlite::Connection) -> Result<()> {
             );",
             [],
         )?;
+
+        // Milestone 2 tables
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS file_hashes (
+                file_path TEXT PRIMARY KEY,
+                hash TEXT NOT NULL
+            );",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS file_facts_metadata (
+                file_path TEXT,
+                class_fqn TEXT,
+                PRIMARY KEY (file_path, class_fqn)
+            );",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS method_summaries (
+                method_fqn TEXT NOT NULL,
+                param_index INTEGER NOT NULL,
+                PRIMARY KEY (method_fqn, param_index)
+            );",
+            [],
+        )?;
+
         Ok(())
     })();
 
@@ -356,7 +393,7 @@ mod tests {
         use std::thread;
         let db_path = std::env::temp_dir().join(format!("test_db_{}.db", uuid::Uuid::new_v4()));
         let pool = establish_connection_pool(&db_path).unwrap();
-        
+
         // Initialize the DB structure
         {
             let conn = pool.get().unwrap();

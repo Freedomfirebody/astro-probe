@@ -1,15 +1,15 @@
+use crate::kernel::workspace::{Workspace, WorkspaceState, WorkspaceStatus};
+use anyhow::Context;
+use astro_probe_db::DbPool;
 use std::collections::HashMap;
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
-use std::path::Path;
-use crate::kernel::workspace::{Workspace, WorkspaceStatus, WorkspaceState};
-use astro_probe_db::DbPool;
-use anyhow::Context;
-use std::path::PathBuf;
 
 use astro_probe_core::traits::{DependencyAnalyzer, FrameworkAnalyzer};
-use astro_probe_java::jar::{JarAnalyzer, get_global_cache_path};
 use astro_probe_java::di::DependencyInjectionAnalyzer;
+use astro_probe_java::jar::{get_global_cache_path, JarAnalyzer};
 
 fn find_workspace_root() -> Option<PathBuf> {
     if let Ok(current_dir) = std::env::current_dir() {
@@ -60,7 +60,8 @@ pub struct WorkspaceManager {
 
 impl WorkspaceManager {
     pub fn new() -> Self {
-        let workspaces: Arc<RwLock<HashMap<String, WorkspaceState>>> = Arc::new(RwLock::new(HashMap::new()));
+        let workspaces: Arc<RwLock<HashMap<String, WorkspaceState>>> =
+            Arc::new(RwLock::new(HashMap::new()));
         let workspaces_clone = Arc::clone(&workspaces);
 
         tokio::spawn(async move {
@@ -83,7 +84,10 @@ impl WorkspaceManager {
                             if last_acc.elapsed().as_secs() >= timeout_secs {
                                 ws_state.workspace.status = WorkspaceStatus::Idle;
                                 ws_state.db_pool = None; // Drop connection pool
-                                tracing::info!("Workspace {} transitioned to Idle due to inactivity", ws_state.workspace.id);
+                                tracing::info!(
+                                    "Workspace {} transitioned to Idle due to inactivity",
+                                    ws_state.workspace.id
+                                );
                             }
                         }
                     }
@@ -100,42 +104,81 @@ impl WorkspaceManager {
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
+        let db_exists = db_path.exists()
+            && std::fs::metadata(&db_path)
+                .map(|m| m.len() > 0)
+                .unwrap_or(false);
+        // Safely initialize the database and transition to WAL mode using a single connection
+        {
+            let conn = astro_probe_db::establish_connection(&db_path)?;
+            if !db_exists {
+                astro_probe_db::init_db(&conn)?;
+            }
+        }
         let pool = astro_probe_db::establish_connection_pool(&db_path)?;
-        let conn = pool.get()?;
-        astro_probe_db::init_db(&conn)?;
         Ok(pool)
     }
 
-    pub fn create_workspace(&self, name: String, project_path: String) -> anyhow::Result<Workspace> {
+    pub fn create_workspace(
+        &self,
+        name: String,
+        project_path: String,
+    ) -> anyhow::Result<Workspace> {
         let id = uuid::Uuid::new_v4().to_string();
-        
+
         let resolved_path = resolve_path(&project_path).to_string_lossy().to_string();
         let pool = self.load_db_pool(&resolved_path)?;
-        
+
         // Initialize db schemas and parse java files
         {
             let conn = pool.get().context("Failed to get connection from pool")?;
             let parser = astro_probe_java::parser::JavaParser::new();
+
+            let t0 = std::time::Instant::now();
             if let Err(e) = parser.parse_and_populate(&resolved_path, &conn) {
                 tracing::error!("Failed to parse Java files: {}", e);
                 return Err(anyhow::anyhow!("Failed to parse Java files: {}", e));
             }
-            if let Err(e) = JarAnalyzer::new().analyze_dependency(Path::new(&resolved_path), &conn, &id) {
+            println!("parse_and_populate took {:?}", t0.elapsed());
+
+            let t1 = std::time::Instant::now();
+            if let Err(e) =
+                JarAnalyzer::new().analyze_dependency(Path::new(&resolved_path), &conn, &id)
+            {
                 tracing::error!("Failed to analyze and cache JAR files: {}", e);
-                return Err(anyhow::anyhow!("Failed to analyze and cache JAR files: {}", e));
+                return Err(anyhow::anyhow!(
+                    "Failed to analyze and cache JAR files: {}",
+                    e
+                ));
             }
+            println!("JarAnalyzer took {:?}", t1.elapsed());
+
+            let t2 = std::time::Instant::now();
             if let Err(e) = DependencyInjectionAnalyzer::new().analyze(&conn) {
                 tracing::error!("Failed to run dependency injection analysis: {}", e);
-                return Err(anyhow::anyhow!("Failed to run dependency injection analysis: {}", e));
+                return Err(anyhow::anyhow!(
+                    "Failed to run dependency injection analysis: {}",
+                    e
+                ));
             }
+            println!("DependencyInjectionAnalyzer took {:?}", t2.elapsed());
+
+            let t3 = std::time::Instant::now();
             if let Err(e) = astro_probe_core::cg::PointsToSolver::new().solve(&conn) {
                 tracing::error!("Failed to run call graph analysis: {}", e);
                 return Err(anyhow::anyhow!("Failed to run call graph analysis: {}", e));
             }
+            println!("PointsToSolver took {:?}", t3.elapsed());
+
+            let t4 = std::time::Instant::now();
             if let Err(e) = astro_probe_core::dfg::DfgAnalyzer::new().analyze(&conn) {
                 tracing::error!("Failed to run data flow graph analysis: {}", e);
-                return Err(anyhow::anyhow!("Failed to run data flow graph analysis: {}", e));
+                return Err(anyhow::anyhow!(
+                    "Failed to run data flow graph analysis: {}",
+                    e
+                ));
             }
+            println!("DfgAnalyzer took {:?}", t4.elapsed());
         }
 
         let ws = Workspace {
@@ -151,14 +194,20 @@ impl WorkspaceManager {
             last_accessed: Arc::new(RwLock::new(Instant::now())),
         };
 
-        let mut guard = self.workspaces.write().map_err(|e| anyhow::anyhow!("RwLock poisoned: {}", e))?;
+        let mut guard = self
+            .workspaces
+            .write()
+            .map_err(|e| anyhow::anyhow!("RwLock poisoned: {}", e))?;
         guard.insert(id, state);
         Ok(ws)
     }
 
     pub fn list_workspaces(&self) -> Vec<Workspace> {
         match self.workspaces.read() {
-            Ok(guard) => guard.values().map(|state| state.workspace.clone()).collect(),
+            Ok(guard) => guard
+                .values()
+                .map(|state| state.workspace.clone())
+                .collect(),
             Err(_) => Vec::new(),
         }
     }
@@ -179,17 +228,18 @@ impl WorkspaceManager {
 
             // Remove the mapping entry from workspace_jars in the global cache
             if let Ok(global_conn) = astro_probe_db::establish_connection(get_global_cache_path()) {
-                let _ = global_conn.execute(
-                    "DELETE FROM workspace_jars WHERE workspace_id = ?1",
-                    [id],
-                );
+                let _ =
+                    global_conn.execute("DELETE FROM workspace_jars WHERE workspace_id = ?1", [id]);
             }
 
             // Delete the database file outside the lock
             let db_path = Path::new(&project_path).join(".astro-probe.db");
             if db_path.exists() {
                 if let Err(e) = std::fs::remove_file(&db_path) {
-                    tracing::warn!("Failed to delete database file at first attempt: {}. Retrying in 50ms...", e);
+                    tracing::warn!(
+                        "Failed to delete database file at first attempt: {}. Retrying in 50ms...",
+                        e
+                    );
                     std::thread::sleep(std::time::Duration::from_millis(50));
                     if let Err(retry_err) = std::fs::remove_file(&db_path) {
                         tracing::warn!("Failed to delete database file on retry: {}", retry_err);
@@ -273,7 +323,9 @@ impl WorkspaceManager {
                     let mut guard = self.workspaces.write().ok()?;
                     if let Some(state) = guard.get_mut(id) {
                         // Re-verify the workspace state
-                        if state.workspace.status == WorkspaceStatus::Idle || state.workspace.status == WorkspaceStatus::Loaded {
+                        if state.workspace.status == WorkspaceStatus::Idle
+                            || state.workspace.status == WorkspaceStatus::Loaded
+                        {
                             if let Some(ref existing_pool) = state.db_pool {
                                 // Already loaded by another concurrent thread, return it and don't overwrite
                                 if let Ok(mut last_acc) = state.last_accessed.write() {
@@ -321,7 +373,7 @@ mod tests {
             panic!("Poisoning the lock intentionally");
         });
         let _ = handle.join();
-        
+
         // Ensure list_workspaces does not panic and returns an empty list
         let workspaces = manager.list_workspaces();
         assert!(workspaces.is_empty());
@@ -332,7 +384,7 @@ mod tests {
         let temp_dir = std::env::temp_dir();
         let path_a = temp_dir.join(format!("test_dir_a_{}", uuid::Uuid::new_v4()));
         let path_b = temp_dir.join(format!("test_dir_b_{}", uuid::Uuid::new_v4()));
-        
+
         std::fs::create_dir_all(&path_a).unwrap();
         std::fs::create_dir_all(&path_b).unwrap();
 
@@ -340,10 +392,12 @@ mod tests {
         let path_b_str = path_b.to_str().unwrap().to_string();
 
         let manager = WorkspaceManager::new();
-        
+
         // 1. Create workspace under path_a. This populates state.db_pool with pool_a.
-        let ws = manager.create_workspace("test_workspace".to_string(), path_a_str.clone()).unwrap();
-        
+        let ws = manager
+            .create_workspace("test_workspace".to_string(), path_a_str.clone())
+            .unwrap();
+
         // 2. Put workspace into Idle state, but KEEP the db_pool as Some(pool_a)
         {
             let mut guard = manager.workspaces.write().unwrap();
@@ -359,7 +413,7 @@ mod tests {
         // Then it acquires the write lock, sees state.db_pool is already Some(pool_a),
         // and returns pool_a WITHOUT overwriting state.db_pool.
         let returned_pool = manager.get_db_pool_and_touch(&ws.id).unwrap();
-        
+
         // 4. Verify that returned_pool is pool_a (pointing to path_a), not pool_b (pointing to path_b).
         // We do this by inserting a dummy record through returned_pool,
         // and then verifying if it exists in path_a's DB vs path_b's DB.
@@ -367,34 +421,41 @@ mod tests {
         conn.execute(
             "INSERT INTO call_edges (caller, callee) VALUES ('caller_test', 'callee_test');",
             [],
-        ).unwrap();
-        
+        )
+        .unwrap();
+
         // Open connections directly to files to check where the data was written
         let db_file_a = path_a.join(".astro-probe.db");
         let db_file_b = path_b.join(".astro-probe.db");
-        
+
         let conn_a = rusqlite::Connection::open(db_file_a).unwrap();
         let count_a: i64 = conn_a.query_row(
             "SELECT count(*) FROM call_edges WHERE caller='caller_test' AND callee='callee_test';",
             [],
             |r| r.get(0)
         ).unwrap();
-        
+
         let conn_b = rusqlite::Connection::open(db_file_b).unwrap();
         let count_b: i64 = conn_b.query_row(
             "SELECT count(*) FROM call_edges WHERE caller='caller_test' AND callee='callee_test';",
             [],
             |r| r.get(0)
         ).unwrap();
-        
-        assert_eq!(count_a, 1, "The record should have been written to database A (pool_a)");
-        assert_eq!(count_b, 0, "The record should NOT have been written to database B (pool_b)");
+
+        assert_eq!(
+            count_a, 1,
+            "The record should have been written to database A (pool_a)"
+        );
+        assert_eq!(
+            count_b, 0,
+            "The record should NOT have been written to database B (pool_b)"
+        );
 
         // Clean up
         drop(conn);
         drop(returned_pool);
         drop(manager);
-        
+
         // Wait briefly for manager's background thread or drop to complete
         std::thread::sleep(std::time::Duration::from_millis(100));
 

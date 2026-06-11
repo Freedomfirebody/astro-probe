@@ -11,8 +11,11 @@ use std::borrow::Cow;
 use std::ops::Deref;
 use std::rc::Rc;
 
-use crate::attributes::{AttributeData, AttributeInfo, read_attributes};
-use crate::constant_pool::{ConstantPoolEntry, ConstantPoolIter, read_constant_pool, read_cp_utf8, read_cp_classinfo, read_cp_classinfo_opt};
+use crate::attributes::{read_attributes, AttributeData, AttributeInfo};
+use crate::constant_pool::{
+    read_constant_pool, read_cp_classinfo, read_cp_classinfo_opt, read_cp_utf8, ConstantPoolEntry,
+    ConstantPoolIter,
+};
 
 pub(crate) fn err<T>(msg: &'static str) -> Result<T, String> {
     Err(msg.to_string())
@@ -20,7 +23,10 @@ pub(crate) fn err<T>(msg: &'static str) -> Result<T, String> {
 
 pub(crate) fn read_u1(bytes: &[u8], ix: &mut usize) -> Result<u8, String> {
     if bytes.len() < *ix + 1 {
-        return Err(format!("Unexpected end of stream reading u2 at index {}", *ix));
+        return Err(format!(
+            "Unexpected end of stream reading u2 at index {}",
+            *ix
+        ));
     }
     let result = bytes[*ix];
     *ix += 1;
@@ -29,50 +35,61 @@ pub(crate) fn read_u1(bytes: &[u8], ix: &mut usize) -> Result<u8, String> {
 
 pub(crate) fn read_u2(bytes: &[u8], ix: &mut usize) -> Result<u16, String> {
     if bytes.len() < *ix + 2 {
-        return Err(format!("Unexpected end of stream reading u2 at index {}", *ix));
+        return Err(format!(
+            "Unexpected end of stream reading u2 at index {}",
+            *ix
+        ));
     }
-    let result =
-        ((bytes[*ix + 0] as u16) << 8) |
-        ((bytes[*ix + 1] as u16));
+    let result = ((bytes[*ix + 0] as u16) << 8) | (bytes[*ix + 1] as u16);
     *ix += 2;
     Ok(result)
 }
 
 pub(crate) fn read_u4(bytes: &[u8], ix: &mut usize) -> Result<u32, String> {
     if bytes.len() < *ix + 4 {
-        return Err(format!("Unexpected end of stream reading u4 at index {}", *ix));
+        return Err(format!(
+            "Unexpected end of stream reading u4 at index {}",
+            *ix
+        ));
     }
-    let result =
-        ((bytes[*ix + 0] as u32) << 24) |
-        ((bytes[*ix + 1] as u32) << 16) |
-        ((bytes[*ix + 2] as u32) <<  8) |
-        ((bytes[*ix + 3] as u32));
+    let result = ((bytes[*ix + 0] as u32) << 24)
+        | ((bytes[*ix + 1] as u32) << 16)
+        | ((bytes[*ix + 2] as u32) << 8)
+        | (bytes[*ix + 3] as u32);
     *ix += 4;
     Ok(result)
 }
 
 pub(crate) fn read_u8(bytes: &[u8], ix: &mut usize) -> Result<u64, String> {
     if bytes.len() < *ix + 8 {
-        return Err(format!("Unexpected end of stream reading u8 at index {}", *ix));
+        return Err(format!(
+            "Unexpected end of stream reading u8 at index {}",
+            *ix
+        ));
     }
-    let result =
-        ((bytes[*ix + 0] as u64) << 56) |
-        ((bytes[*ix + 1] as u64) << 48) |
-        ((bytes[*ix + 2] as u64) << 40) |
-        ((bytes[*ix + 3] as u64) << 32) |
-        ((bytes[*ix + 4] as u64) << 24) |
-        ((bytes[*ix + 5] as u64) << 16) |
-        ((bytes[*ix + 6] as u64) << 8) |
-        ((bytes[*ix + 7] as u64));
+    let result = ((bytes[*ix + 0] as u64) << 56)
+        | ((bytes[*ix + 1] as u64) << 48)
+        | ((bytes[*ix + 2] as u64) << 40)
+        | ((bytes[*ix + 3] as u64) << 32)
+        | ((bytes[*ix + 4] as u64) << 24)
+        | ((bytes[*ix + 5] as u64) << 16)
+        | ((bytes[*ix + 6] as u64) << 8)
+        | (bytes[*ix + 7] as u64);
     *ix += 8;
     Ok(result)
 }
 
-fn read_interfaces<'a>(bytes: &'a [u8], ix: &mut usize, pool: &[Rc<ConstantPoolEntry<'a>>]) -> Result<Vec<Cow<'a, str>>, String> {
+fn read_interfaces<'a>(
+    bytes: &'a [u8],
+    ix: &mut usize,
+    pool: &[Rc<ConstantPoolEntry<'a>>],
+) -> Result<Vec<Cow<'a, str>>, String> {
     let count = read_u2(bytes, ix)?;
     let mut interfaces = Vec::with_capacity(count.into());
     for i in 0..count {
-        interfaces.push(read_cp_classinfo(bytes, ix, pool).map_err(|e| format!("{} interface {}", e, i))?);
+        interfaces.push(
+            read_cp_classinfo(bytes, ix, pool).map_err(|e| format!("{} interface {}", e, i))?,
+        );
     }
     Ok(interfaces)
 }
@@ -127,14 +144,21 @@ pub struct FieldInfo<'a> {
     pub attributes: Vec<AttributeInfo<'a>>,
 }
 
-fn read_fields<'a>(bytes: &'a [u8], ix: &mut usize, pool: &[Rc<ConstantPoolEntry<'a>>]) -> Result<Vec<FieldInfo<'a>>, String> {
+fn read_fields<'a>(
+    bytes: &'a [u8],
+    ix: &mut usize,
+    pool: &[Rc<ConstantPoolEntry<'a>>],
+) -> Result<Vec<FieldInfo<'a>>, String> {
     let count = read_u2(bytes, ix)?;
     let mut fields = Vec::with_capacity(count.into());
     for i in 0..count {
         let access_flags = FieldAccessFlags::from_bits_truncate(read_u2(bytes, ix)?);
-        let name = read_cp_utf8(bytes, ix, pool).map_err(|e| format!("{} name of class field {}", e, i))?;
-        let descriptor = read_cp_utf8(bytes, ix, pool).map_err(|e| format!("{} descriptor of class field {}", e, i))?;
-        let attributes = read_attributes(bytes, ix, pool).map_err(|e| format!("{} of class field {}", e, i))?;
+        let name = read_cp_utf8(bytes, ix, pool)
+            .map_err(|e| format!("{} name of class field {}", e, i))?;
+        let descriptor = read_cp_utf8(bytes, ix, pool)
+            .map_err(|e| format!("{} descriptor of class field {}", e, i))?;
+        let attributes =
+            read_attributes(bytes, ix, pool).map_err(|e| format!("{} of class field {}", e, i))?;
         fields.push(FieldInfo {
             access_flags,
             name,
@@ -170,14 +194,21 @@ pub struct MethodInfo<'a> {
     pub attributes: Vec<AttributeInfo<'a>>,
 }
 
-fn read_methods<'a>(bytes: &'a [u8], ix: &mut usize, pool: &[Rc<ConstantPoolEntry<'a>>]) -> Result<Vec<MethodInfo<'a>>, String> {
+fn read_methods<'a>(
+    bytes: &'a [u8],
+    ix: &mut usize,
+    pool: &[Rc<ConstantPoolEntry<'a>>],
+) -> Result<Vec<MethodInfo<'a>>, String> {
     let count = read_u2(bytes, ix)?;
     let mut methods = Vec::with_capacity(count.into());
     for i in 0..count {
         let access_flags = MethodAccessFlags::from_bits_truncate(read_u2(bytes, ix)?);
-        let name = read_cp_utf8(bytes, ix, pool).map_err(|e| format!("{} name of class method {}", e, i))?;
-        let descriptor = read_cp_utf8(bytes, ix, pool).map_err(|e| format!("{} descriptor of class method {}", e, i))?;
-        let attributes = read_attributes(bytes, ix, pool).map_err(|e| format!("{} of class method {}", e, i))?;
+        let name = read_cp_utf8(bytes, ix, pool)
+            .map_err(|e| format!("{} name of class method {}", e, i))?;
+        let descriptor = read_cp_utf8(bytes, ix, pool)
+            .map_err(|e| format!("{} descriptor of class method {}", e, i))?;
+        let attributes =
+            read_attributes(bytes, ix, pool).map_err(|e| format!("{} of class method {}", e, i))?;
         methods.push(MethodInfo {
             access_flags,
             name,
@@ -202,11 +233,13 @@ bitflags! {
     }
 }
 
-fn validate_bootstrap_methods<'a>(pool: &[Rc<ConstantPoolEntry<'a>>], attributes: &[AttributeInfo<'a>]) -> Result<(), String> {
+fn validate_bootstrap_methods<'a>(
+    pool: &[Rc<ConstantPoolEntry<'a>>],
+    attributes: &[AttributeInfo<'a>],
+) -> Result<(), String> {
     for cp_entry in pool {
         match cp_entry.deref() {
-            ConstantPoolEntry::Dynamic(x, _) |
-            ConstantPoolEntry::InvokeDynamic(x, _) => {
+            ConstantPoolEntry::Dynamic(x, _) | ConstantPoolEntry::InvokeDynamic(x, _) => {
                 let mut found = 0;
                 for attr in attributes {
                     match &attr.data {
@@ -262,31 +295,52 @@ pub fn parse_class<'a>(raw_bytes: &'a [u8]) -> Result<ClassFile<'a>, String> {
     let is_module = access_flags.contains(ClassAccessFlags::MODULE);
     if is_module {
         if major_version < 53 {
-            return Err(format!("Found invalid MODULE class access flag on class file of major version {}", major_version));
+            return Err(format!(
+                "Found invalid MODULE class access flag on class file of major version {}",
+                major_version
+            ));
         }
         if access_flags != ClassAccessFlags::MODULE {
-            return Err(format!("Found invalid class access flags {:?}; no other flags should be set with MODULE", access_flags));
+            return Err(format!(
+                "Found invalid class access flags {:?}; no other flags should be set with MODULE",
+                access_flags
+            ));
         }
     }
-    let this_class = read_cp_classinfo(raw_bytes, &mut ix, &constant_pool).map_err(|e| format!("{} this_class", e))?;
-    let super_class = read_cp_classinfo_opt(raw_bytes, &mut ix, &constant_pool).map_err(|e| format!("{} super_class", e))?;
+    let this_class = read_cp_classinfo(raw_bytes, &mut ix, &constant_pool)
+        .map_err(|e| format!("{} this_class", e))?;
+    let super_class = read_cp_classinfo_opt(raw_bytes, &mut ix, &constant_pool)
+        .map_err(|e| format!("{} super_class", e))?;
     let interfaces = read_interfaces(raw_bytes, &mut ix, &constant_pool)?;
     let fields = read_fields(raw_bytes, &mut ix, &constant_pool)?;
     let methods = read_methods(raw_bytes, &mut ix, &constant_pool)?;
-    let attributes = read_attributes(raw_bytes, &mut ix, &constant_pool).map_err(|e| format!("{} of class", e))?;
+    let attributes = read_attributes(raw_bytes, &mut ix, &constant_pool)
+        .map_err(|e| format!("{} of class", e))?;
 
     if is_module {
         if super_class.is_some() {
-            return Err(format!("Found non-empty super_class {}; expected none for module", super_class.unwrap()));
+            return Err(format!(
+                "Found non-empty super_class {}; expected none for module",
+                super_class.unwrap()
+            ));
         }
         if interfaces.len() != 0 {
-            return Err(format!("Found {} interfaces; expected 0 for module", interfaces.len()));
+            return Err(format!(
+                "Found {} interfaces; expected 0 for module",
+                interfaces.len()
+            ));
         }
         if fields.len() != 0 {
-            return Err(format!("Found {} fields; expected 0 for module", fields.len()));
+            return Err(format!(
+                "Found {} fields; expected 0 for module",
+                fields.len()
+            ));
         }
         if methods.len() != 0 {
-            return Err(format!("Found {} methods; expected 0 for module", methods.len()));
+            return Err(format!(
+                "Found {} methods; expected 0 for module",
+                methods.len()
+            ));
         }
     }
 

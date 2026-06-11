@@ -1,7 +1,7 @@
+use astro_probe_db::DbPool;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
-use astro_probe_db::DbPool;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum WorkspaceStatus {
