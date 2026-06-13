@@ -426,9 +426,14 @@ async fn test_validation_medium_spring_call_chains() {
         .expect("Failed to get DB pool");
     let conn = pool.get().expect("Failed to get connection");
 
-    let mut debug_out =
-        std::fs::File::create("c:\\Development\\Project\\Rust\\astro-probe\\debug_info.txt")
-            .unwrap();
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let debug_path = std::path::Path::new(&manifest_dir)
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("debug_info.txt");
+    let mut debug_out = std::fs::File::create(debug_path).unwrap();
     use std::io::Write as _;
 
     writeln!(debug_out, "=== FIELD ASSIGNMENTS ===").unwrap();
