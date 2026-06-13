@@ -1,7 +1,12 @@
 [workspace]
+resolver = "2"
 members = [
-    ".",
-    "tests/e2e"
+    "crates/cafebabe",
+    "crates/astro-probe-core",
+    "crates/astro-probe-db",
+    "crates/astro-probe-java",
+    "crates/astro-probe-server",
+    "crates/astro-probe-tests",
 ]
 
 [workspace.dependencies]
@@ -24,26 +29,9 @@ tempfile = "3.10.1"
 zip = "2.1.0"
 cafebabe = "0.3.1"
 
-[package]
-name = "astro-probe"
-version = "0.1.0"
-edition = "2021"
+[patch.crates-io]
+cafebabe = { path = "crates/cafebabe" }
 
-[dependencies]
-tokio = { workspace = true }
-axum = { workspace = true }
-tower = { workspace = true }
-tower-http = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-rusqlite = { workspace = true }
-r2d2 = { workspace = true }
-clap = { workspace = true }
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
-anyhow = { workspace = true }
-thiserror = { workspace = true }
-uuid = { workspace = true }
-zip = { workspace = true }
-cafebabe = { workspace = true }
+[profile.dev]
+opt-level = 3
 

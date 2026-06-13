@@ -1,0 +1,13 @@
+[package]
+name = "astro-probe-java"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+astro-probe-core = { path = "../astro-probe-core" }
+astro-probe-db = { path = "../astro-probe-db" }
+rusqlite = { workspace = true }
+cafebabe = { workspace = true }
+zip = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
