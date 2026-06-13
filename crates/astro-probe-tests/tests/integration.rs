@@ -6,7 +6,7 @@ use std::sync::{Mutex, OnceLock};
 static TEST_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
 
 fn lock_test_env() -> std::sync::MutexGuard<'static, ()> {
-    TEST_MUTEX.get_or_init(|| Mutex::new(())).lock().unwrap()
+    TEST_MUTEX.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|e| e.into_inner())
 }
 
 struct EnvGuard {
@@ -151,12 +151,12 @@ async fn test_end_to_end_simple_spring() {
 fn test_copy_jar_facts_to_local_method_summaries() {
     let _lock = lock_test_env();
     let env = EnvGuard::new("copy_jar");
-    let local_conn = rusqlite::Connection::open_in_memory().unwrap();
+    let mut local_conn = rusqlite::Connection::open_in_memory().unwrap();
     astro_probe_db::init_db(&local_conn).unwrap();
 
-    let global_conn = rusqlite::Connection::open(&env.temp_path).unwrap();
+    let mut global_conn = rusqlite::Connection::open(&env.temp_path).unwrap();
 
-    astro_probe_java::jar::init_global_db(&global_conn).unwrap();
+    astro_probe_java::jar::init_global_db(&mut global_conn).unwrap();
 
     let jar_hash = "mock_jar_hash_123";
 
@@ -165,7 +165,7 @@ fn test_copy_jar_facts_to_local_method_summaries() {
         [jar_hash, "com.test.Identity.f(java.lang.Object)", "0"],
     ).unwrap();
 
-    astro_probe_java::jar::copy_jar_facts_to_local(&local_conn, jar_hash).unwrap();
+    astro_probe_java::jar::copy_jar_facts_to_local(&mut local_conn, jar_hash).unwrap();
 
     let count: i64 = local_conn.query_row(
         "SELECT count(*) FROM method_summaries WHERE method_fqn = 'com.test.Identity.f(java.lang.Object)' AND param_index = 0",
@@ -175,9 +175,18 @@ fn test_copy_jar_facts_to_local_method_summaries() {
     assert_eq!(count, 1);
 }
 
+struct TestSupernodeExtension;
+impl astro_probe_core::cg::PointsToSolverExtension for TestSupernodeExtension {
+    fn is_supernode(&self, target: &str) -> bool {
+        target.contains("java.lang.Object.toString")
+            || target.contains("java.lang.StringBuilder.toString")
+            || target.contains("java.lang.StringBuffer.toString")
+    }
+}
+
 #[test]
 fn test_supernode_detection_and_bypass() {
-    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    let mut conn = rusqlite::Connection::open_in_memory().unwrap();
     astro_probe_db::init_db(&conn).unwrap();
 
     conn.execute(
@@ -187,7 +196,8 @@ fn test_supernode_detection_and_bypass() {
     ).unwrap();
 
     let solver = astro_probe_core::cg::PointsToSolver::new();
-    solver.solve(&conn).unwrap();
+    let ext = TestSupernodeExtension;
+    solver.solve(&mut conn, &[&ext]).unwrap();
 
     let count: i64 = conn
         .query_row(
@@ -203,7 +213,7 @@ fn test_supernode_detection_and_bypass() {
 
 #[test]
 fn test_method_summary_propagation_bypass() {
-    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    let mut conn = rusqlite::Connection::open_in_memory().unwrap();
     astro_probe_db::init_db(&conn).unwrap();
 
     conn.execute(
@@ -233,7 +243,7 @@ fn test_method_summary_propagation_bypass() {
     .unwrap();
 
     let solver = astro_probe_core::cg::PointsToSolver::new();
-    solver.solve(&conn).unwrap();
+    solver.solve(&mut conn, &[]).unwrap();
 
     let count: i64 = conn
         .query_row(
@@ -391,5 +401,384 @@ public class A {
     drop(conn2);
     drop(pool2);
     manager2.delete_workspace(&ws2.id);
+    std::fs::remove_dir_all(&test_proj_dir).ok();
+}
+
+#[tokio::test]
+async fn test_milestone_3_features() {
+    let _lock = lock_test_env();
+    let _env = EnvGuard::new("m3_features");
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let target_dir = manifest_dir
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("target");
+
+    let test_proj_dir = target_dir.join(format!("test_m3_proj_{}", uuid::Uuid::new_v4()));
+    let src_dir = test_proj_dir
+        .join("src")
+        .join("main")
+        .join("java")
+        .join("com")
+        .join("test");
+    std::fs::create_dir_all(&src_dir).unwrap();
+
+    // 1. Create properties files
+    let props_content = "spring.profiles.active=dev\nserver.port=9090";
+    std::fs::write(test_proj_dir.join("application.properties"), props_content).unwrap();
+
+    let yaml_content = r#"
+app:
+  name: my-cool-app
+  desc: "development mode"
+"#;
+    std::fs::write(test_proj_dir.join("application-dev.yml"), yaml_content).unwrap();
+
+    // 2. Create MyService.java
+    let service_code = r#"
+package com.test;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
+
+@Service
+public class MyService {
+    @Value("${server.port:8080}")
+    private String port;
+
+    @Value("${app.name}")
+    private String appName;
+
+    @Value("${app.missing:default-val}")
+    private String missing;
+
+    @Value("literal-value")
+    private String literal;
+
+    public MyService(@Value("${app.desc}") String desc) {
+    }
+}
+"#;
+    std::fs::write(src_dir.join("MyService.java"), service_code).unwrap();
+
+    // 3. Create MyController.java
+    let controller_code = r#"
+package com.test;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/api/v1")
+public class MyController {
+    @GetMapping("/users")
+    public String listUsers() {
+        return "users";
+    }
+
+    @PostMapping(value = { "/users/add", "/users/create" })
+    public String createUser() {
+        return "created";
+    }
+}
+"#;
+    std::fs::write(src_dir.join("MyController.java"), controller_code).unwrap();
+
+    // 4. Create Event files
+    let event_code = r#"
+package com.test;
+public class MyEvent {
+    private String data;
+    public MyEvent(Object src, String data) {
+        this.data = data;
+    }
+    public String getData() {
+        return this.data;
+    }
+}
+"#;
+    std::fs::write(src_dir.join("MyEvent.java"), event_code).unwrap();
+
+    let publisher_code = r#"
+package com.test;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.stereotype.Component;
+
+@Component
+public class MyPublisher {
+    private final ApplicationEventPublisher publisher;
+    public MyPublisher(ApplicationEventPublisher publisher) {
+        this.publisher = publisher;
+    }
+    public void publish(String val) {
+        MyEvent event = new MyEvent(this, val);
+        publisher.publishEvent(event);
+    }
+}
+"#;
+    std::fs::write(src_dir.join("MyPublisher.java"), publisher_code).unwrap();
+
+    let listener_code = r#"
+package com.test;
+import org.springframework.context.event.EventListener;
+import org.springframework.stereotype.Component;
+
+@Component
+public class MyListener {
+    @EventListener
+    public void onEvent(MyEvent event) {
+        String data = event.getData();
+    }
+}
+"#;
+    std::fs::write(src_dir.join("MyListener.java"), listener_code).unwrap();
+
+    // 5. Create Runnable & Thread/Executor caller code
+    let thread_code = r#"
+package com.test;
+import java.util.concurrent.Executor;
+
+public class MyThreadCaller {
+    public void startThread(MyRunnable runnable) {
+        Thread t = new Thread(runnable);
+        t.start();
+    }
+    public void runExecutor(Executor exec, MyRunnable runnable) {
+        exec.execute(runnable);
+    }
+}
+"#;
+    std::fs::write(src_dir.join("MyThreadCaller.java"), thread_code).unwrap();
+
+    let runnable_code = r#"
+package com.test;
+public class MyRunnable implements Runnable {
+    @Override
+    public void run() {
+        String x = "run-method";
+    }
+}
+"#;
+    std::fs::write(src_dir.join("MyRunnable.java"), runnable_code).unwrap();
+
+    // 6. Run workspace manager to parse and analyze
+    let manager = WorkspaceManager::new();
+    let ws = manager
+        .create_workspace("m3-test".to_string(), test_proj_dir.to_string_lossy().to_string())
+        .expect("Failed to create workspace");
+
+    let pool = manager.get_db_pool_and_touch(&ws.id).unwrap();
+    let conn = pool.get().unwrap();
+
+    // -- Assert Properties Resolution --
+    let count: i64 = conn.query_row("SELECT count(*) FROM resolved_properties", [], |r| r.get(0)).unwrap();
+    assert!(count >= 3);
+
+    let dev_name: String = conn.query_row(
+        "SELECT value FROM resolved_properties WHERE key = 'app.name'", [], |r| r.get(0)
+    ).unwrap();
+    assert_eq!(dev_name, "my-cool-app");
+
+    let port_val: String = conn.query_row(
+        "SELECT value FROM resolved_properties WHERE key = 'server.port'", [], |r| r.get(0)
+    ).unwrap();
+    assert_eq!(port_val, "9090");
+
+    {
+        let mut st_h = conn.prepare("SELECT * FROM class_hierarchy").unwrap();
+        let rows_h = st_h.query_map([], |r| Ok((r.get::<_, String>(0).unwrap(), r.get::<_, String>(1).unwrap()))).unwrap();
+        for r in rows_h.flatten() {
+            println!("CLASS HIERARCHY: {:?}", r);
+        }
+
+        let mut st = conn.prepare("SELECT * FROM class_annotations").unwrap();
+        let rows = st.query_map([], |r| Ok((r.get::<_, String>(0).unwrap(), r.get::<_, String>(1).unwrap()))).unwrap();
+        for r in rows.flatten() {
+            println!("CLASS ANN: {:?}", r);
+        }
+
+        let mut st2 = conn.prepare("SELECT * FROM field_annotations").unwrap();
+        let rows2 = st2.query_map([], |r| Ok((r.get::<_, String>(0).unwrap(), r.get::<_, String>(1).unwrap(), r.get::<_, String>(2).unwrap()))).unwrap();
+        for r in rows2.flatten() {
+            println!("FIELD ANN: {:?}", r);
+        }
+    }
+
+    let port_alloc: String = conn.query_row(
+        "SELECT rhs FROM source_assignments WHERE lhs = 'SpringFieldAlloc:com.test.MyService.port' OR lhs = 'SpringBeanAlloc:com.test.MyService.port'", [], |r| r.get(0)
+    ).unwrap();
+    assert_eq!(port_alloc, "StringAlloc:9090");
+
+    // appName field resolved to "my-cool-app"
+    let app_name_alloc: String = conn.query_row(
+        "SELECT rhs FROM source_assignments WHERE lhs = 'SpringFieldAlloc:com.test.MyService.appName' OR lhs = 'SpringBeanAlloc:com.test.MyService.appName'", [], |r| r.get(0)
+    ).unwrap();
+    assert_eq!(app_name_alloc, "StringAlloc:my-cool-app");
+
+    // missing field resolved to "default-val"
+    let missing_alloc: String = conn.query_row(
+        "SELECT rhs FROM source_assignments WHERE lhs = 'SpringFieldAlloc:com.test.MyService.missing' OR lhs = 'SpringBeanAlloc:com.test.MyService.missing'", [], |r| r.get(0)
+    ).unwrap();
+    assert_eq!(missing_alloc, "StringAlloc:default-val");
+
+    // literal field resolved to "literal-value"
+    let literal_alloc: String = conn.query_row(
+        "SELECT rhs FROM source_assignments WHERE lhs = 'SpringFieldAlloc:com.test.MyService.literal' OR lhs = 'SpringBeanAlloc:com.test.MyService.literal'", [], |r| r.get(0)
+    ).unwrap();
+    assert_eq!(literal_alloc, "StringAlloc:literal-value");
+
+    // constructor parameter desc resolved to "development mode"
+    let desc_param_exists: i64 = conn.query_row(
+        "SELECT count(*) FROM source_assignments WHERE lhs = 'com.test.MyService.<init>(java.lang.String)#desc' AND rhs = 'StringAlloc:development mode'",
+        [], |r| r.get(0)
+    ).unwrap();
+    assert_eq!(desc_param_exists, 1);
+
+    // -- Assert Spring MVC Route Mapping --
+    let get_path: String = conn.query_row(
+        "SELECT path FROM web_routes WHERE http_method = 'GET'", [], |r| r.get(0)
+    ).unwrap();
+    assert_eq!(get_path, "/api/v1/users");
+
+    let post_paths_count: i64 = conn.query_row(
+        "SELECT count(*) FROM web_routes WHERE http_method = 'POST'", [], |r| r.get(0)
+    ).unwrap();
+    assert_eq!(post_paths_count, 2);
+
+    let paths: Vec<String> = {
+        let mut stmt = conn.prepare("SELECT path FROM web_routes WHERE http_method = 'POST' ORDER BY path").unwrap();
+        stmt.query_map([], |r| r.get(0)).unwrap().flatten().collect()
+    };
+    assert_eq!(paths, vec!["/api/v1/users/add", "/api/v1/users/create"]);
+
+    // -- Assert Event Listener Propagation --
+    // Assert call edge exists from publish to listener onEvent method
+    let event_edge_exists: i64 = conn.query_row(
+        "SELECT count(*) FROM call_edges WHERE caller = 'com.test.MyPublisher.publish' AND callee = 'com.test.MyListener.onEvent'",
+        [], |r| r.get(0)
+    ).unwrap();
+    assert_eq!(event_edge_exists, 1);
+
+    // -- Assert Async Execution Tracing --
+    // startThread -> MyRunnable.run
+    let thread_edge_exists: i64 = conn.query_row(
+        "SELECT count(*) FROM call_edges WHERE caller = 'com.test.MyThreadCaller.startThread' AND callee = 'com.test.MyRunnable.run'",
+        [], |r| r.get(0)
+    ).unwrap();
+    assert_eq!(thread_edge_exists, 1);
+
+    // runExecutor -> MyRunnable.run
+    let exec_edge_exists: i64 = conn.query_row(
+        "SELECT count(*) FROM call_edges WHERE caller = 'com.test.MyThreadCaller.runExecutor' AND callee = 'com.test.MyRunnable.run'",
+        [], |r| r.get(0)
+    ).unwrap();
+    assert_eq!(exec_edge_exists, 1);
+
+    // Cleanup
+    drop(conn);
+    drop(pool);
+    manager.delete_workspace(&ws.id);
+    std::fs::remove_dir_all(&test_proj_dir).ok();
+}
+
+#[tokio::test]
+async fn test_spring_aop_pointcut_resolution() {
+    let _lock = lock_test_env();
+    let _env = EnvGuard::new("spring_aop");
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let target_dir = manifest_dir
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("target");
+
+    let test_proj_dir = target_dir.join(format!("test_aop_proj_{}", uuid::Uuid::new_v4()));
+    let src_dir = test_proj_dir
+        .join("src")
+        .join("main")
+        .join("java")
+        .join("com")
+        .join("test");
+    std::fs::create_dir_all(&src_dir).unwrap();
+
+    // 1. Create MyService.java
+    let service_code = r#"
+package com.test;
+public class MyService {
+    public void doSomething() {}
+    public void doOtherThing() {}
+}
+"#;
+    std::fs::write(src_dir.join("MyService.java"), service_code).unwrap();
+
+    // 2. Create MyAspect.java
+    let aspect_code = r#"
+package com.test;
+import org.aspectj.lang.annotation.Aspect;
+import org.aspectj.lang.annotation.Before;
+import org.aspectj.lang.annotation.Pointcut;
+
+@Aspect
+public class MyAspect {
+    @Pointcut("within(com.test..*)")
+    public void myPointcut() {}
+
+    @Before("myPointcut()")
+    public void beforeAdvice() {}
+
+    @Before("execution(* com.test.MyService.doOtherThing(..))")
+    public void beforeOtherAdvice() {}
+}
+"#;
+    std::fs::write(src_dir.join("MyAspect.java"), aspect_code).unwrap();
+
+    // 3. Create MyController.java
+    let controller_code = r#"
+package com.test;
+public class MyController {
+    public void trigger() {
+        MyService service = new MyService();
+        service.doSomething();
+        service.doOtherThing();
+    }
+}
+"#;
+    std::fs::write(src_dir.join("MyController.java"), controller_code).unwrap();
+
+    // 4. Run workspace manager to parse and analyze
+    let manager = WorkspaceManager::new();
+    let ws = manager
+        .create_workspace("aop-test".to_string(), test_proj_dir.to_string_lossy().to_string())
+        .expect("Failed to create workspace");
+
+    let pool = manager.get_db_pool_and_touch(&ws.id).unwrap();
+    let conn = pool.get().unwrap();
+
+    // Print all discovered method annotations for debugging
+    {
+        let mut stmt = conn.prepare("SELECT method_fqn, annotation_name FROM method_annotations").unwrap();
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0).unwrap(), r.get::<_, String>(1).unwrap()))).unwrap();
+        for r in rows.flatten() {
+            println!("METHOD ANN: {:?}", r);
+        }
+    }
+
+    // Verify call edges to the advices
+    let advice1_exists: i64 = conn.query_row(
+        "SELECT count(*) FROM call_edges WHERE caller = 'com.test.MyController.trigger' AND callee = 'com.test.MyAspect.beforeAdvice'",
+        [], |r| r.get(0)
+    ).unwrap();
+    assert_eq!(advice1_exists, 1);
+
+    let advice2_exists: i64 = conn.query_row(
+        "SELECT count(*) FROM call_edges WHERE caller = 'com.test.MyController.trigger' AND callee = 'com.test.MyAspect.beforeOtherAdvice'",
+        [], |r| r.get(0)
+    ).unwrap();
+    assert_eq!(advice2_exists, 1);
+
+    // Cleanup
+    drop(conn);
+    drop(pool);
+    manager.delete_workspace(&ws.id);
     std::fs::remove_dir_all(&test_proj_dir).ok();
 }

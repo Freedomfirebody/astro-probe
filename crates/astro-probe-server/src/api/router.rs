@@ -1,6 +1,6 @@
 use crate::api::handlers::{
     create_workspace, delete_workspace, list_workspaces, query_call_graph, query_lineage,
-    start_workspace, stop_workspace, AppState,
+    query_routes, start_workspace, stop_workspace, AppState,
 };
 use axum::{
     routing::{delete, get, post},
@@ -19,5 +19,6 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/workspaces/:id/stop", post(stop_workspace))
         .route("/api/workspaces/:id/call-graph", get(query_call_graph))
         .route("/api/workspaces/:id/lineage", get(query_lineage))
+        .route("/api/workspaces/:id/routes", get(query_routes))
         .with_state(state)
 }

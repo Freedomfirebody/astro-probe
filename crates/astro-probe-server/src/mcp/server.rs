@@ -140,6 +140,19 @@ impl McpServer {
                                 },
                                 "required": ["workspace_id", "node", "direction"]
                             }
+                        },
+                        {
+                            "name": "query_routes",
+                            "description": "Query HTTP web routes in a workspace",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "workspace_id": { "type": "string" },
+                                    "path": { "type": "string" },
+                                    "http_method": { "type": "string" }
+                                },
+                                "required": ["workspace_id"]
+                            }
                         }
                     ]
                 });
@@ -375,6 +388,68 @@ impl McpServer {
                     })),
                     Err(e) => Err(format!("Lineage query failed: {}", e)),
                 }
+            }
+            "query_routes" => {
+                let workspace_id = args
+                    .get("workspace_id")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "Missing required parameter: workspace_id".to_string())?;
+                let path_filter = args.get("path").and_then(|v| v.as_str());
+                let http_method_filter = args.get("http_method").and_then(|v| v.as_str());
+
+                let pool = self
+                    .manager
+                    .get_db_pool_and_touch(workspace_id)
+                    .ok_or_else(|| "Workspace not found".to_string())?;
+
+                let conn = pool
+                    .get()
+                    .map_err(|e| format!("Failed to get DB connection: {}", e))?;
+
+                let mut sql = "SELECT http_method, path, controller_method_fqn FROM web_routes WHERE 1=1".to_string();
+                let mut query_args: Vec<String> = Vec::new();
+
+                if let Some(path) = path_filter {
+                    sql.push_str(" AND path = ?");
+                    query_args.push(path.to_string());
+                }
+                if let Some(method) = http_method_filter {
+                    sql.push_str(" AND http_method = ?");
+                    query_args.push(method.to_string());
+                }
+
+                let mut stmt = conn
+                    .prepare(&sql)
+                    .map_err(|e| format!("Failed to prepare SQL: {}", e))?;
+
+                let params_ref: Vec<&dyn rusqlite::ToSql> = query_args.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+
+                let routes_iter = stmt
+                    .query_map(&*params_ref, |row| {
+                        let http_method: String = row.get(0)?;
+                        let path: String = row.get(1)?;
+                        let controller_method_fqn: String = row.get(2)?;
+                        Ok(json!({
+                            "http_method": http_method,
+                            "path": path,
+                            "controller_method_fqn": controller_method_fqn
+                        }))
+                    })
+                    .map_err(|e| format!("Failed to execute SQL: {}", e))?;
+
+                let mut routes = Vec::new();
+                for r in routes_iter.flatten() {
+                    routes.push(r);
+                }
+
+                Ok(json!({
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json!({ "routes": routes }).to_string()
+                        }
+                    ]
+                }))
             }
             _ => Err(format!("Unknown tool: {}", name)),
         }

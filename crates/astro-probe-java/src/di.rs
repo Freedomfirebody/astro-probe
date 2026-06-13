@@ -3,6 +3,45 @@ use astro_probe_core::traits::FrameworkAnalyzer;
 use rusqlite::Connection;
 use std::collections::{HashMap, HashSet};
 
+fn resolve_property_placeholder(val: &str, conn: &Connection) -> String {
+    let mut s = val.trim().to_string();
+    if s.starts_with('"') && s.ends_with('"') {
+        s = s[1..s.len() - 1].trim().to_string();
+    } else if s.starts_with('\'') && s.ends_with('\'') {
+        s = s[1..s.len() - 1].trim().to_string();
+    }
+
+    if s.starts_with("${") && s.ends_with('}') {
+        let inside = &s[2..s.len() - 1];
+        let (key, default_val) = if let Some(col_idx) = inside.find(':') {
+            let k = inside[..col_idx].trim();
+            let d = inside[col_idx + 1..].trim();
+            (k, Some(d))
+        } else {
+            (inside.trim(), None)
+        };
+
+        let db_val: Result<String, rusqlite::Error> = conn.query_row(
+            "SELECT value FROM resolved_properties WHERE key = ?1",
+            [key],
+            |row| row.get(0),
+        );
+
+        match db_val {
+            Ok(v) => v,
+            Err(_) => {
+                if let Some(d) = default_val {
+                    d.to_string()
+                } else {
+                    key.to_string()
+                }
+            }
+        }
+    } else {
+        s
+    }
+}
+
 pub struct DependencyInjectionAnalyzer;
 
 impl DependencyInjectionAnalyzer {
@@ -17,12 +56,13 @@ impl Default for DependencyInjectionAnalyzer {
     }
 }
 
-impl FrameworkAnalyzer for DependencyInjectionAnalyzer {
+impl FrameworkAnalyzer<Connection> for DependencyInjectionAnalyzer {
     type Error = JavaError;
 
-    fn analyze(&self, conn: &Connection) -> std::result::Result<(), Self::Error> {
-        conn.execute("BEGIN IMMEDIATE TRANSACTION;", [])?;
-        let res = (|| -> std::result::Result<(), Self::Error> {
+    fn analyze(&self, conn: &mut Connection) -> std::result::Result<(), Self::Error> {
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        {
+            let conn = &tx;
             conn.execute(
                 "DELETE FROM source_assignments WHERE method_fqn = 'SpringDI'",
                 [],
@@ -302,15 +342,9 @@ impl FrameworkAnalyzer for DependencyInjectionAnalyzer {
                 let field_name: String = row.get(1)?;
                 let ann_name: String = row.get(2)?;
                 let raw_val = ann_name["Value:".len()..].to_string();
-                let mut val = raw_val.trim().to_string();
-                if val.starts_with("${") && val.ends_with('}') {
-                    val = val[2..val.len() - 1].to_string();
-                }
-                if val.starts_with('"') && val.ends_with('"') {
-                    val = val[1..val.len() - 1].to_string();
-                }
+                let resolved = resolve_property_placeholder(&raw_val, conn);
 
-                let str_alloc_id = format!("StringAlloc:{}", val);
+                let str_alloc_id = format!("StringAlloc:{}", resolved);
                 // Register string allocation site
                 conn.execute(
                     "INSERT OR IGNORE INTO allocation_sites (alloc_id, class_fqn, method_fqn) VALUES (?1, 'java.lang.String', 'SpringDI')",
@@ -325,17 +359,35 @@ impl FrameworkAnalyzer for DependencyInjectionAnalyzer {
                 )?;
             }
 
-            Ok(())
-        })();
-        match res {
-            Ok(_) => {
-                conn.execute("COMMIT;", [])?;
-                Ok(())
-            }
-            Err(e) => {
-                let _ = conn.execute("ROLLBACK;", []);
-                Err(e)
+            // Step 6: Parameter Value Property Injection
+            let mut val_param_stmt = conn.prepare(
+                "SELECT method_fqn, parameter_name, annotation_name FROM parameter_annotations WHERE annotation_name LIKE 'Value:%'"
+            )?;
+            let mut vp_rows = val_param_stmt.query([])?;
+            while let Some(row) = vp_rows.next()? {
+                let method_fqn: String = row.get(0)?;
+                let param_name: String = row.get(1)?;
+                let ann_name: String = row.get(2)?;
+                let raw_val = ann_name["Value:".len()..].to_string();
+                let resolved = resolve_property_placeholder(&raw_val, conn);
+
+                let str_alloc_id = format!("StringAlloc:{}", resolved);
+                // Register string allocation site
+                conn.execute(
+                    "INSERT OR IGNORE INTO allocation_sites (alloc_id, class_fqn, method_fqn) VALUES (?1, 'java.lang.String', 'SpringDI')",
+                    [&str_alloc_id],
+                )?;
+
+                // Assign to parameter node
+                let param_node = format!("{}#{}", method_fqn, param_name);
+                conn.execute(
+                    "INSERT INTO source_assignments (lhs, rhs, assignment_type, method_fqn) VALUES (?1, ?2, 'ALLOC', 'SpringDI')",
+                    [&param_node, &str_alloc_id],
+                )?;
             }
         }
+
+        tx.commit()?;
+        Ok(())
     }
 }

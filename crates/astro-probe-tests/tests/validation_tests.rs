@@ -82,10 +82,19 @@ fn copy_dir_all(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> std::io::Result
     Ok(())
 }
 
+struct TestSupernodeExtension;
+impl astro_probe_core::cg::PointsToSolverExtension for TestSupernodeExtension {
+    fn is_supernode(&self, target: &str) -> bool {
+        target.contains("java.lang.Object.toString")
+            || target.contains("java.lang.StringBuilder.toString")
+            || target.contains("java.lang.StringBuffer.toString")
+    }
+}
+
 #[tokio::test]
 async fn test_validation_to_string_call_chains_bounded() {
     // 1. Verify that querying call chains through java.lang.Object.toString() returns bounded results.
-    let conn = Connection::open_in_memory().unwrap();
+    let mut conn = Connection::open_in_memory().unwrap();
     astro_probe_db::init_db(&conn).unwrap();
 
     // Insert method declaration for Object.toString()
@@ -105,7 +114,8 @@ async fn test_validation_to_string_call_chains_bounded() {
 
     // Run solver
     let solver = PointsToSolver::new();
-    solver.solve(&conn).unwrap();
+    let ext = TestSupernodeExtension;
+    solver.solve(&mut conn, &[&ext]).unwrap();
 
     // Verify Object.toString() gets bypassed as a supernode and assigns a dummy allocation
     let count: i64 = conn
@@ -192,12 +202,12 @@ fn test_validation_method_summaries_from_bytecode() {
 
     // Initialize global cache DB
     let env = EnvGuard::new("val_bytecode");
-    let global_conn = rusqlite::Connection::open(&env.temp_path).unwrap();
-    init_global_db(&global_conn).unwrap();
+    let mut global_conn = rusqlite::Connection::open(&env.temp_path).unwrap();
+    init_global_db(&mut global_conn).unwrap();
 
     // Parse the JAR
     let jar_hash = "identity_jar_hash_999";
-    parse_jar_file(jar_file.path(), jar_hash, &global_conn).unwrap();
+    parse_jar_file(jar_file.path(), jar_hash, &mut global_conn).unwrap();
 
     // Verify that the method summary is generated in the global cache
     let cache_summary_count: i64 = global_conn
@@ -214,9 +224,9 @@ fn test_validation_method_summaries_from_bytecode() {
     );
 
     // Copy to a local database
-    let local_conn = rusqlite::Connection::open_in_memory().unwrap();
+    let mut local_conn = rusqlite::Connection::open_in_memory().unwrap();
     astro_probe_db::init_db(&local_conn).unwrap();
-    copy_jar_facts_to_local(&local_conn, jar_hash).unwrap();
+    copy_jar_facts_to_local(&mut local_conn, jar_hash).unwrap();
 
     // Verify copy
     let local_summary_count: i64 = local_conn
@@ -256,7 +266,7 @@ fn test_validation_method_summaries_from_bytecode() {
         .unwrap();
 
     let solver = PointsToSolver::new();
-    solver.solve(&local_conn).unwrap();
+    solver.solve(&mut local_conn, &[]).unwrap();
 
     // Verify AllocA propagated to the return value of the call
     let pts_count: i64 = local_conn

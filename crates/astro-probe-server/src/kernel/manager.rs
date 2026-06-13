@@ -104,16 +104,10 @@ impl WorkspaceManager {
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let db_exists = db_path.exists()
-            && std::fs::metadata(&db_path)
-                .map(|m| m.len() > 0)
-                .unwrap_or(false);
         // Safely initialize the database and transition to WAL mode using a single connection
         {
             let conn = astro_probe_db::establish_connection(&db_path)?;
-            if !db_exists {
-                astro_probe_db::init_db(&conn)?;
-            }
+            astro_probe_db::init_db(&conn)?;
         }
         let pool = astro_probe_db::establish_connection_pool(&db_path)?;
         Ok(pool)
@@ -131,11 +125,11 @@ impl WorkspaceManager {
 
         // Initialize db schemas and parse java files
         {
-            let conn = pool.get().context("Failed to get connection from pool")?;
+            let mut conn = pool.get().context("Failed to get connection from pool")?;
             let parser = astro_probe_java::parser::JavaParser::new();
 
             let t0 = std::time::Instant::now();
-            if let Err(e) = parser.parse_and_populate(&resolved_path, &conn) {
+            if let Err(e) = parser.parse_and_populate(&resolved_path, &mut conn) {
                 tracing::error!("Failed to parse Java files: {}", e);
                 return Err(anyhow::anyhow!("Failed to parse Java files: {}", e));
             }
@@ -143,7 +137,7 @@ impl WorkspaceManager {
 
             let t1 = std::time::Instant::now();
             if let Err(e) =
-                JarAnalyzer::new().analyze_dependency(Path::new(&resolved_path), &conn, &id)
+                JarAnalyzer::new().analyze_dependency(Path::new(&resolved_path), &mut conn, &id)
             {
                 tracing::error!("Failed to analyze and cache JAR files: {}", e);
                 return Err(anyhow::anyhow!(
@@ -154,7 +148,7 @@ impl WorkspaceManager {
             println!("JarAnalyzer took {:?}", t1.elapsed());
 
             let t2 = std::time::Instant::now();
-            if let Err(e) = DependencyInjectionAnalyzer::new().analyze(&conn) {
+            if let Err(e) = DependencyInjectionAnalyzer::new().analyze(&mut conn) {
                 tracing::error!("Failed to run dependency injection analysis: {}", e);
                 return Err(anyhow::anyhow!(
                     "Failed to run dependency injection analysis: {}",
@@ -163,8 +157,22 @@ impl WorkspaceManager {
             }
             println!("DependencyInjectionAnalyzer took {:?}", t2.elapsed());
 
+            let tr = std::time::Instant::now();
+            if let Err(e) = astro_probe_java::router::SpringMvcRouteAnalyzer::new().analyze(&mut conn) {
+                tracing::error!("Failed to run route mapping analysis: {}", e);
+                return Err(anyhow::anyhow!(
+                    "Failed to run route mapping analysis: {}",
+                    e
+                ));
+            }
+            println!("SpringMvcRouteAnalyzer took {:?}", tr.elapsed());
+
             let t3 = std::time::Instant::now();
-            if let Err(e) = astro_probe_core::cg::PointsToSolver::new().solve(&conn) {
+            let ext_event = astro_probe_java::event::SpringEventLineageExtension::new();
+            let ext_async = astro_probe_java::event::AsyncExecutionExtension::new();
+            let ext_aop = astro_probe_java::event::SpringAopPointcutExtension::new();
+            let extensions: Vec<&dyn astro_probe_core::cg::PointsToSolverExtension> = vec![&ext_event, &ext_async, &ext_aop];
+            if let Err(e) = astro_probe_core::cg::PointsToSolver::new().solve(&mut conn, &extensions) {
                 tracing::error!("Failed to run call graph analysis: {}", e);
                 return Err(anyhow::anyhow!("Failed to run call graph analysis: {}", e));
             }

@@ -102,6 +102,23 @@ pub fn establish_connection_pool<P: AsRef<Path>>(path: P) -> std::result::Result
 }
 
 pub fn init_db(conn: &rusqlite::Connection) -> Result<()> {
+    let has_schema_version_table: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_version')",
+        [],
+        |row| row.get(0),
+    ).unwrap_or(false);
+
+    if has_schema_version_table {
+        let db_version: i64 = conn.query_row(
+            "SELECT version FROM schema_version LIMIT 1",
+            [],
+            |row| row.get(0),
+        ).unwrap_or(0);
+        if db_version == 3 {
+            return Ok(());
+        }
+    }
+
     conn.execute("BEGIN IMMEDIATE TRANSACTION;", [])?;
 
     let create_result = (|| -> Result<()> {
@@ -281,6 +298,46 @@ pub fn init_db(conn: &rusqlite::Connection) -> Result<()> {
                 param_index INTEGER NOT NULL,
                 PRIMARY KEY (method_fqn, param_index)
             );",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS resolved_properties (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS web_routes (
+                http_method TEXT NOT NULL,
+                path TEXT NOT NULL,
+                controller_method_fqn TEXT NOT NULL,
+                PRIMARY KEY (http_method, path, controller_method_fqn)
+            );",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_web_routes_path ON web_routes(path);",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_web_routes_controller_method ON web_routes(controller_method_fqn);",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS schema_version (
+                version INTEGER PRIMARY KEY
+            );",
+            [],
+        )?;
+
+        conn.execute(
+            "INSERT OR REPLACE INTO schema_version (version) VALUES (3);",
             [],
         )?;
 

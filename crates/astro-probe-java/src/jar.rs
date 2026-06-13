@@ -20,13 +20,13 @@ impl Default for JarAnalyzer {
     }
 }
 
-impl DependencyAnalyzer for JarAnalyzer {
+impl DependencyAnalyzer<Connection> for JarAnalyzer {
     type Error = JavaError;
 
     fn analyze_dependency(
         &self,
         path: &Path,
-        local_conn: &Connection,
+        local_conn: &mut Connection,
         workspace_id: &str,
     ) -> std::result::Result<(), Self::Error> {
         let jar_files = if path.is_file() {
@@ -48,14 +48,14 @@ impl DependencyAnalyzer for JarAnalyzer {
             std::fs::create_dir_all(parent).ok();
         }
 
-        let global_conn = Connection::open(&global_db_path)?;
+        let mut global_conn = Connection::open(&global_db_path)?;
         global_conn.execute_batch(
             "PRAGMA journal_mode = WAL;
              PRAGMA synchronous = NORMAL;
              PRAGMA busy_timeout = 5000;",
         )?;
 
-        init_global_db(&global_conn)?;
+        init_global_db(&mut global_conn)?;
 
         local_conn.execute(
             "CREATE TABLE IF NOT EXISTS local_loaded_jars (
@@ -76,7 +76,7 @@ impl DependencyAnalyzer for JarAnalyzer {
 
                 if !is_cached {
                     // Try to parse, ignore malformed/empty/corrupted JARs gracefully
-                    let _ = parse_jar_file(&jar_path, &hash, &global_conn);
+                    let _ = parse_jar_file(&jar_path, &hash, &mut global_conn);
                 }
 
                 let already_copied: bool = local_conn
@@ -123,120 +123,109 @@ pub fn get_global_cache_path() -> PathBuf {
     path
 }
 
-pub fn init_global_db(conn: &Connection) -> Result<()> {
-    conn.execute("BEGIN IMMEDIATE TRANSACTION;", [])?;
-    let create_result = (|| -> Result<()> {
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS cached_jars (
-                jar_hash TEXT PRIMARY KEY,
-                jar_path TEXT,
-                last_accessed INTEGER NOT NULL
-            );",
-            [],
-        )?;
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS cached_classes (
-                jar_hash TEXT NOT NULL,
-                fqn TEXT NOT NULL,
-                kind TEXT NOT NULL,
-                PRIMARY KEY (jar_hash, fqn)
-            );",
-            [],
-        )?;
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS cached_class_hierarchy (
-                jar_hash TEXT NOT NULL,
-                class_fqn TEXT NOT NULL,
-                parent_fqn TEXT NOT NULL,
-                PRIMARY KEY (jar_hash, class_fqn, parent_fqn)
-            );",
-            [],
-        )?;
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS cached_method_declarations (
-                jar_hash TEXT NOT NULL,
-                method_fqn TEXT NOT NULL,
-                class_fqn TEXT NOT NULL,
-                method_name TEXT NOT NULL,
-                params TEXT NOT NULL,
-                PRIMARY KEY (jar_hash, method_fqn, params)
-            );",
-            [],
-        )?;
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS cached_source_assignments (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                jar_hash TEXT NOT NULL,
-                lhs TEXT NOT NULL,
-                rhs TEXT NOT NULL,
-                assignment_type TEXT NOT NULL,
-                method_fqn TEXT NOT NULL
-            );",
-            [],
-        )?;
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS cached_call_sites (
-                jar_hash TEXT NOT NULL,
-                call_id TEXT NOT NULL,
-                method_fqn TEXT NOT NULL,
-                receiver TEXT,
-                method_name TEXT NOT NULL,
-                lhs TEXT,
-                static_callee TEXT,
-                PRIMARY KEY (jar_hash, call_id)
-            );",
-            [],
-        )?;
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS cached_call_arguments (
-                jar_hash TEXT NOT NULL,
-                call_id TEXT NOT NULL,
-                arg_index INTEGER NOT NULL,
-                arg_var TEXT NOT NULL,
-                arg_type TEXT,
-                PRIMARY KEY (jar_hash, call_id, arg_index)
-            );",
-            [],
-        )?;
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS cached_call_edges (
-                jar_hash TEXT NOT NULL,
-                caller TEXT NOT NULL,
-                callee TEXT NOT NULL,
-                is_virtual INTEGER NOT NULL,
-                PRIMARY KEY (jar_hash, caller, callee)
-            );",
-            [],
-        )?;
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS workspace_jars (
-                workspace_id TEXT NOT NULL,
-                jar_hash TEXT NOT NULL,
-                PRIMARY KEY (workspace_id, jar_hash)
-            );",
-            [],
-        )?;
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS cached_method_summaries (
-                jar_hash TEXT NOT NULL,
-                method_fqn TEXT NOT NULL,
-                param_index INTEGER NOT NULL,
-                PRIMARY KEY (jar_hash, method_fqn, param_index)
-            );",
-            [],
-        )?;
-        Ok(())
-    })();
-    match create_result {
-        Ok(_) => {
-            conn.execute("COMMIT;", [])?;
-            Ok(())
-        }
-        Err(e) => {
-            let _ = conn.execute("ROLLBACK;", []);
-            Err(e)
-        }
-    }
+pub fn init_global_db(conn: &mut Connection) -> Result<()> {
+    let conn = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS cached_jars (
+            jar_hash TEXT PRIMARY KEY,
+            jar_path TEXT,
+            last_accessed INTEGER NOT NULL
+        );",
+        [],
+    )?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS cached_classes (
+            jar_hash TEXT NOT NULL,
+            fqn TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            PRIMARY KEY (jar_hash, fqn)
+        );",
+        [],
+    )?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS cached_class_hierarchy (
+            jar_hash TEXT NOT NULL,
+            class_fqn TEXT NOT NULL,
+            parent_fqn TEXT NOT NULL,
+            PRIMARY KEY (jar_hash, class_fqn, parent_fqn)
+        );",
+        [],
+    )?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS cached_method_declarations (
+            jar_hash TEXT NOT NULL,
+            method_fqn TEXT NOT NULL,
+            class_fqn TEXT NOT NULL,
+            method_name TEXT NOT NULL,
+            params TEXT NOT NULL,
+            PRIMARY KEY (jar_hash, method_fqn, params)
+        );",
+        [],
+    )?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS cached_source_assignments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            jar_hash TEXT NOT NULL,
+            lhs TEXT NOT NULL,
+            rhs TEXT NOT NULL,
+            assignment_type TEXT NOT NULL,
+            method_fqn TEXT NOT NULL
+        );",
+        [],
+    )?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS cached_call_sites (
+            jar_hash TEXT NOT NULL,
+            call_id TEXT NOT NULL,
+            method_fqn TEXT NOT NULL,
+            receiver TEXT,
+            method_name TEXT NOT NULL,
+            lhs TEXT,
+            static_callee TEXT,
+            PRIMARY KEY (jar_hash, call_id)
+        );",
+        [],
+    )?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS cached_call_arguments (
+            jar_hash TEXT NOT NULL,
+            call_id TEXT NOT NULL,
+            arg_index INTEGER NOT NULL,
+            arg_var TEXT NOT NULL,
+            arg_type TEXT,
+            PRIMARY KEY (jar_hash, call_id, arg_index)
+        );",
+        [],
+    )?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS cached_call_edges (
+            jar_hash TEXT NOT NULL,
+            caller TEXT NOT NULL,
+            callee TEXT NOT NULL,
+            is_virtual INTEGER NOT NULL,
+            PRIMARY KEY (jar_hash, caller, callee)
+        );",
+        [],
+    )?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS workspace_jars (
+            workspace_id TEXT NOT NULL,
+            jar_hash TEXT NOT NULL,
+            PRIMARY KEY (workspace_id, jar_hash)
+        );",
+        [],
+    )?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS cached_method_summaries (
+            jar_hash TEXT NOT NULL,
+            method_fqn TEXT NOT NULL,
+            param_index INTEGER NOT NULL,
+            PRIMARY KEY (jar_hash, method_fqn, param_index)
+        );",
+        [],
+    )?;
+    conn.commit()?;
+    Ok(())
 }
 
 pub fn sha256_hash(data: &[u8]) -> String {
@@ -592,12 +581,11 @@ fn get_store_opcode_slot(opcode: u8, code: &[u8], ip: usize) -> Option<(usize, u
     }
 }
 
-pub fn parse_jar_file(jar_path: &Path, jar_hash: &str, global_conn: &Connection) -> Result<()> {
+pub fn parse_jar_file(jar_path: &Path, jar_hash: &str, global_conn: &mut Connection) -> Result<()> {
     let file = File::open(jar_path)?;
     let mut archive = ZipArchive::new(file)?;
 
-    global_conn.execute("BEGIN IMMEDIATE TRANSACTION;", [])?;
-    let process_res = (|| -> Result<()> {
+    let global_conn = global_conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -1109,21 +1097,11 @@ pub fn parse_jar_file(jar_path: &Path, jar_hash: &str, global_conn: &Connection)
                 }
             }
         }
+        global_conn.commit()?;
         Ok(())
-    })();
-    match process_res {
-        Ok(_) => {
-            global_conn.execute("COMMIT;", [])?;
-            Ok(())
-        }
-        Err(e) => {
-            let _ = global_conn.execute("ROLLBACK;", []);
-            Err(e)
-        }
-    }
 }
 
-pub fn copy_jar_facts_to_local(conn: &Connection, jar_hash: &str) -> Result<()> {
+pub fn copy_jar_facts_to_local(conn: &mut Connection, jar_hash: &str) -> Result<()> {
     let global_db_path = get_global_cache_path();
     let global_db_path_str = global_db_path.to_string_lossy().replace('\\', "/");
     let escaped_path = global_db_path_str.replace("'", "''");
@@ -1133,28 +1111,20 @@ pub fn copy_jar_facts_to_local(conn: &Connection, jar_hash: &str) -> Result<()> 
         [],
     )?;
 
-    conn.execute("BEGIN IMMEDIATE TRANSACTION;", [])?;
     let copy_res = (|| -> Result<()> {
-        conn.execute("INSERT OR REPLACE INTO classes (fqn, kind) SELECT fqn, kind FROM global_db.cached_classes WHERE jar_hash = ?1", [jar_hash])?;
-        conn.execute("INSERT OR REPLACE INTO class_hierarchy (class_fqn, parent_fqn) SELECT class_fqn, parent_fqn FROM global_db.cached_class_hierarchy WHERE jar_hash = ?1", [jar_hash])?;
-        conn.execute("INSERT OR REPLACE INTO method_declarations (method_fqn, class_fqn, method_name, params) SELECT method_fqn, class_fqn, method_name, params FROM global_db.cached_method_declarations WHERE jar_hash = ?1", [jar_hash])?;
-        conn.execute("INSERT OR REPLACE INTO source_assignments (lhs, rhs, assignment_type, method_fqn) SELECT lhs, rhs, assignment_type, method_fqn FROM global_db.cached_source_assignments WHERE jar_hash = ?1", [jar_hash])?;
-        conn.execute("INSERT OR REPLACE INTO call_sites (call_id, method_fqn, receiver, method_name, lhs, static_callee) SELECT call_id, method_fqn, receiver, method_name, lhs, static_callee FROM global_db.cached_call_sites WHERE jar_hash = ?1", [jar_hash])?;
-        conn.execute("INSERT OR REPLACE INTO call_arguments (call_id, arg_index, arg_var, arg_type) SELECT call_id, arg_index, arg_var, arg_type FROM global_db.cached_call_arguments WHERE jar_hash = ?1", [jar_hash])?;
-        conn.execute("INSERT OR REPLACE INTO call_edges (caller, callee, is_virtual) SELECT caller, callee, is_virtual FROM global_db.cached_call_edges WHERE jar_hash = ?1", [jar_hash])?;
-        conn.execute("INSERT OR REPLACE INTO library_classes (fqn) SELECT fqn FROM global_db.cached_classes WHERE jar_hash = ?1", [jar_hash])?;
-        conn.execute("INSERT OR REPLACE INTO method_summaries (method_fqn, param_index) SELECT method_fqn, param_index FROM global_db.cached_method_summaries WHERE jar_hash = ?1", [jar_hash])?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        tx.execute("INSERT OR REPLACE INTO classes (fqn, kind) SELECT fqn, kind FROM global_db.cached_classes WHERE jar_hash = ?1", [jar_hash])?;
+        tx.execute("INSERT OR REPLACE INTO class_hierarchy (class_fqn, parent_fqn) SELECT class_fqn, parent_fqn FROM global_db.cached_class_hierarchy WHERE jar_hash = ?1", [jar_hash])?;
+        tx.execute("INSERT OR REPLACE INTO method_declarations (method_fqn, class_fqn, method_name, params) SELECT method_fqn, class_fqn, method_name, params FROM global_db.cached_method_declarations WHERE jar_hash = ?1", [jar_hash])?;
+        tx.execute("INSERT OR REPLACE INTO source_assignments (lhs, rhs, assignment_type, method_fqn) SELECT lhs, rhs, assignment_type, method_fqn FROM global_db.cached_source_assignments WHERE jar_hash = ?1", [jar_hash])?;
+        tx.execute("INSERT OR REPLACE INTO call_sites (call_id, method_fqn, receiver, method_name, lhs, static_callee) SELECT call_id, method_fqn, receiver, method_name, lhs, static_callee FROM global_db.cached_call_sites WHERE jar_hash = ?1", [jar_hash])?;
+        tx.execute("INSERT OR REPLACE INTO call_arguments (call_id, arg_index, arg_var, arg_type) SELECT call_id, arg_index, arg_var, arg_type FROM global_db.cached_call_arguments WHERE jar_hash = ?1", [jar_hash])?;
+        tx.execute("INSERT OR REPLACE INTO call_edges (caller, callee, is_virtual) SELECT caller, callee, is_virtual FROM global_db.cached_call_edges WHERE jar_hash = ?1", [jar_hash])?;
+        tx.execute("INSERT OR REPLACE INTO library_classes (fqn) SELECT fqn FROM global_db.cached_classes WHERE jar_hash = ?1", [jar_hash])?;
+        tx.execute("INSERT OR REPLACE INTO method_summaries (method_fqn, param_index) SELECT method_fqn, param_index FROM global_db.cached_method_summaries WHERE jar_hash = ?1", [jar_hash])?;
+        tx.commit()?;
         Ok(())
     })();
-
-    match copy_res {
-        Ok(_) => {
-            conn.execute("COMMIT;", [])?;
-        }
-        Err(ref e) => {
-            let _ = conn.execute("ROLLBACK;", []);
-        }
-    }
 
     let detach_res = conn.execute("DETACH DATABASE global_db", []);
 

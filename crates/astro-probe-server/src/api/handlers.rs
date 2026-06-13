@@ -269,3 +269,95 @@ pub async fn query_lineage(
             .into_response(),
     }
 }
+
+#[derive(Debug, Deserialize)]
+pub struct RoutesQueryParams {
+    pub path: Option<String>,
+    pub http_method: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct WebRoute {
+    pub http_method: String,
+    pub path: String,
+    pub controller_method_fqn: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RoutesResponse {
+    pub routes: Vec<WebRoute>,
+}
+
+pub async fn query_routes(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(params): Query<RoutesQueryParams>,
+) -> impl IntoResponse {
+    let pool = match state.manager.get_db_pool_and_touch(&id) {
+        Some(p) => p,
+        None => return (StatusCode::NOT_FOUND, "Workspace not found").into_response(),
+    };
+
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to get DB connection: {}", e),
+            )
+                .into_response()
+        }
+    };
+
+    let mut sql = "SELECT http_method, path, controller_method_fqn FROM web_routes WHERE 1=1".to_string();
+    let mut args: Vec<String> = Vec::new();
+
+    if let Some(ref path) = params.path {
+        sql.push_str(" AND path = ?");
+        args.push(path.clone());
+    }
+    if let Some(ref method) = params.http_method {
+        sql.push_str(" AND http_method = ?");
+        args.push(method.clone());
+    }
+
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to prepare SQL: {}", e),
+            )
+                .into_response()
+        }
+    };
+
+    let params_ref: Vec<&dyn rusqlite::ToSql> = args.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+
+    let routes_iter = match stmt.query_map(&*params_ref, |row| {
+        let http_method: String = row.get(0)?;
+        let path: String = row.get(1)?;
+        let controller_method_fqn: String = row.get(2)?;
+        Ok(WebRoute {
+            http_method,
+            path,
+            controller_method_fqn,
+        })
+    }) {
+        Ok(it) => it,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to execute SQL: {}", e),
+            )
+                .into_response()
+        }
+    };
+
+    let mut routes = Vec::new();
+    for r in routes_iter.flatten() {
+        routes.push(r);
+    }
+
+    Json(RoutesResponse { routes }).into_response()
+}

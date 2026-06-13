@@ -26,9 +26,9 @@ impl SourceParser for JavaParser {
     type Error = JavaError;
 
     fn parse_project(&self, project_path: &Path) -> std::result::Result<Vec<Fact>, Self::Error> {
-        let temp_conn = rusqlite::Connection::open_in_memory()?;
+        let mut temp_conn = rusqlite::Connection::open_in_memory()?;
         astro_probe_db::init_db(&temp_conn)?;
-        self.parse_and_populate(project_path, &temp_conn)?;
+        self.parse_and_populate(project_path, &mut temp_conn)?;
 
         let mut facts = Vec::new();
 
@@ -179,11 +179,18 @@ impl SourceParser for JavaParser {
 }
 
 #[derive(Debug, Clone)]
+pub struct JavaFieldInfo {
+    pub name: String,
+    pub field_type: String,
+    pub annotations: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
 struct JavaClassInfo {
     package_name: String,
     imports: Vec<String>,
     class_name: String,
-    fields: Vec<(String, String)>, // (name, type)
+    fields: Vec<JavaFieldInfo>,
     methods: Vec<JavaMethodInfo>,
     parents: Vec<String>,
     is_interface: bool,
@@ -191,13 +198,13 @@ struct JavaClassInfo {
 }
 
 #[derive(Debug, Clone)]
-struct JavaMethodInfo {
-    method_name: String,
-    signature: String, // list of parameter types (comma separated)
-    body: String,
-    is_constructor: bool,
-    annotations: Vec<String>,
-    parameter_annotations: Vec<(String, String)>, // (param_name, annotation)
+pub struct JavaMethodInfo {
+    pub method_name: String,
+    pub signature: String, // list of parameter types (comma separated)
+    pub body: String,
+    pub is_constructor: bool,
+    pub annotations: Vec<String>,
+    pub parameter_annotations: Vec<(String, String)>, // (param_name, annotation)
 }
 
 #[derive(Debug, Clone)]
@@ -206,12 +213,218 @@ struct MethodCallInfo {
     method_name: String,
 }
 
+fn find_config_files(dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut files = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
+                    if name == "target" || name == "build" || name == ".git" || name == "node_modules" {
+                        continue;
+                    }
+                }
+                files.extend(find_config_files(&path));
+            } else {
+                if let Some(filename) = path.file_name().and_then(|s| s.to_str()) {
+                    if (filename.starts_with("application") && filename.ends_with(".properties"))
+                        || (filename.starts_with("application") && filename.ends_with(".yml"))
+                        || (filename.starts_with("application") && filename.ends_with(".yaml"))
+                    {
+                        files.push(path);
+                    }
+                }
+            }
+        }
+    }
+    files
+}
+
+fn parse_properties_file(content: &str) -> HashMap<String, String> {
+    let mut props = HashMap::new();
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('!') {
+            continue;
+        }
+        if let Some(eq_idx) = trimmed.find('=') {
+            let key = trimmed[..eq_idx].trim().to_string();
+            let mut val = trimmed[eq_idx + 1..].trim().to_string();
+            if val.starts_with('"') && val.ends_with('"') {
+                val = val[1..val.len() - 1].to_string();
+            } else if val.starts_with('\'') && val.ends_with('\'') {
+                val = val[1..val.len() - 1].to_string();
+            }
+            props.insert(key, val);
+        } else if let Some(col_idx) = trimmed.find(':') {
+            let key = trimmed[..col_idx].trim().to_string();
+            let mut val = trimmed[col_idx + 1..].trim().to_string();
+            if val.starts_with('"') && val.ends_with('"') {
+                val = val[1..val.len() - 1].to_string();
+            } else if val.starts_with('\'') && val.ends_with('\'') {
+                val = val[1..val.len() - 1].to_string();
+            }
+            props.insert(key, val);
+        }
+    }
+    props
+}
+
+fn parse_yaml_file(content: &str) -> HashMap<String, String> {
+    let mut props = HashMap::new();
+    let mut stack: Vec<(usize, String)> = Vec::new();
+    for line in content.lines() {
+        let indent = line.len() - line.trim_start().len();
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        while !stack.is_empty() && stack.last().unwrap().0 >= indent {
+            stack.pop();
+        }
+        if let Some(col_idx) = trimmed.find(':') {
+            let key_part = trimmed[..col_idx].trim();
+            let mut val_part = trimmed[col_idx + 1..].trim().to_string();
+            if let Some(hash_idx) = val_part.find('#') {
+                val_part = val_part[..hash_idx].trim().to_string();
+            }
+            let mut key = key_part.to_string();
+            if key.starts_with('"') && key.ends_with('"') {
+                key = key[1..key.len() - 1].to_string();
+            } else if key.starts_with('\'') && key.ends_with('\'') {
+                key = key[1..key.len() - 1].to_string();
+            }
+            if val_part.is_empty() {
+                stack.push((indent, key));
+            } else {
+                let mut val = val_part;
+                if val.starts_with('"') && val.ends_with('"') {
+                    val = val[1..val.len() - 1].to_string();
+                } else if val.starts_with('\'') && val.ends_with('\'') {
+                    val = val[1..val.len() - 1].to_string();
+                }
+                let mut full_key = String::new();
+                for (_, k) in &stack {
+                    full_key.push_str(k);
+                    full_key.push('.');
+                }
+                full_key.push_str(&key);
+                props.insert(full_key, val);
+            }
+        }
+    }
+    props
+}
+
+fn resolve_and_store_properties(project_path: &Path, conn: &mut rusqlite::Connection) -> Result<()> {
+    let files = find_config_files(project_path);
+    let mut config_changed = false;
+    let mut current_hashes = HashMap::new();
+    for file in &files {
+        let path_str = file.to_string_lossy().to_string();
+        if let Ok(hash) = compute_file_hash(file) {
+            current_hashes.insert(path_str, hash);
+        }
+    }
+
+    let mut stored_hashes = HashMap::new();
+    let table_exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='file_hashes')",
+        [],
+        |row| row.get(0),
+    ).unwrap_or(false);
+
+    if table_exists {
+        for path_str in current_hashes.keys() {
+            let mut stmt = conn.prepare("SELECT hash FROM file_hashes WHERE file_path = ?1")?;
+            let mut rows = stmt.query([path_str])?;
+            if let Some(row) = rows.next()? {
+                let h: String = row.get(0)?;
+                stored_hashes.insert(path_str.clone(), h);
+            }
+        }
+    }
+
+    if current_hashes.len() != stored_hashes.len() {
+        config_changed = true;
+    } else {
+        for (path, hash) in &current_hashes {
+            if stored_hashes.get(path) != Some(hash) {
+                config_changed = true;
+                break;
+            }
+        }
+    }
+
+    if !config_changed && table_exists {
+        return Ok(());
+    }
+
+    let mut base_props = HashMap::new();
+    let mut profile_props: HashMap<String, HashMap<String, String>> = HashMap::new();
+
+    for file in files {
+        if let Some(filename) = file.file_name().and_then(|s| s.to_str()) {
+            if let Ok(content) = std::fs::read_to_string(&file) {
+                let parsed = if filename.ends_with(".properties") {
+                    parse_properties_file(&content)
+                } else {
+                    parse_yaml_file(&content)
+                };
+                let stem = file.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                if stem == "application" {
+                    for (k, v) in parsed {
+                        base_props.insert(k, v);
+                    }
+                } else if stem.starts_with("application-") {
+                    let profile = stem["application-".len()..].to_string();
+                    let entry = profile_props.entry(profile).or_default();
+                    for (k, v) in parsed {
+                        entry.insert(k, v);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut final_props = base_props.clone();
+    if let Some(active_profile) = base_props.get("spring.profiles.active") {
+        for p in active_profile.split(',') {
+            let p_trimmed = p.trim();
+            if let Some(p_map) = profile_props.get(p_trimmed) {
+                for (k, v) in p_map {
+                    final_props.insert(k.clone(), v.clone());
+                }
+            }
+        }
+    }
+
+    conn.execute("DELETE FROM resolved_properties", [])?;
+    for (k, v) in final_props {
+        conn.execute(
+            "INSERT OR REPLACE INTO resolved_properties (key, value) VALUES (?1, ?2)",
+            [&k, &v],
+        )?;
+    }
+
+    for (path, hash) in current_hashes {
+        conn.execute(
+            "INSERT OR REPLACE INTO file_hashes (file_path, hash) VALUES (?1, ?2)",
+            [path, hash],
+        )?;
+    }
+
+    Ok(())
+}
+
 impl JavaParser {
     pub fn parse_and_populate<P: AsRef<Path>>(
         &self,
         project_path: P,
-        conn: &rusqlite::Connection,
+        conn: &mut rusqlite::Connection,
     ) -> Result<()> {
+        resolve_and_store_properties(project_path.as_ref(), conn)?;
+
         let files = find_java_files(project_path.as_ref());
         println!(
             "parse_and_populate: project_path = {:?}, files found = {}",
@@ -237,7 +450,7 @@ impl JavaParser {
         ).unwrap_or(false);
 
         if table_exists {
-            let mut stmt = conn.prepare("SELECT file_path, hash FROM file_hashes")?;
+            let mut stmt = conn.prepare("SELECT file_path, hash FROM file_hashes WHERE file_path LIKE '%.java'")?;
             let mut rows = stmt.query([])?;
             while let Some(row) = rows.next()? {
                 let path: String = row.get(0)?;
@@ -290,94 +503,7 @@ impl JavaParser {
             }
         }
 
-        // 5. Purge old facts from the database for these classes and their methods
-        if !classes_to_purge.is_empty() {
-            conn.execute("BEGIN IMMEDIATE TRANSACTION;", [])?;
-            let purge_res = (|| -> Result<()> {
-                // Find all methods for classes to purge
-                let mut methods_to_purge = std::collections::HashSet::new();
-                for class_fqn in &classes_to_purge {
-                    let mut stmt = conn.prepare(
-                        "SELECT method_fqn FROM method_declarations WHERE class_fqn = ?1",
-                    )?;
-                    let mut rows = stmt.query([class_fqn])?;
-                    while let Some(row) = rows.next()? {
-                        let m_fqn: String = row.get(0)?;
-                        methods_to_purge.insert(m_fqn);
-                    }
-                }
-
-                // Delete from all tables as per rules
-                for class_fqn in &classes_to_purge {
-                    let class_prefix = format!("{}.", class_fqn);
-                    let class_prefix_like = format!("{}%", class_prefix);
-
-                    conn.execute("DELETE FROM classes WHERE fqn = ?1", [class_fqn])?;
-                    conn.execute(
-                        "DELETE FROM class_hierarchy WHERE class_fqn = ?1 OR parent_fqn = ?1",
-                        [class_fqn],
-                    )?;
-                    conn.execute(
-                        "DELETE FROM method_declarations WHERE class_fqn = ?1",
-                        [class_fqn],
-                    )?;
-                    conn.execute(
-                        "DELETE FROM allocation_sites WHERE class_fqn = ?1",
-                        [class_fqn],
-                    )?;
-
-                    // Delete from source_assignments, call_sites, call_arguments
-                    // Locate call_ids for call sites of methods to delete
-                    let mut call_ids = Vec::new();
-                    {
-                        let mut stmt = conn.prepare("SELECT call_id FROM call_sites WHERE method_fqn = ?1 OR method_fqn LIKE ?2")?;
-                        let mut rows = stmt.query([class_fqn, &class_prefix_like])?;
-                        while let Some(row) = rows.next()? {
-                            let cid: String = row.get(0)?;
-                            call_ids.push(cid);
-                        }
-                    }
-                    for cid in call_ids {
-                        conn.execute("DELETE FROM call_arguments WHERE call_id = ?1", [&cid])?;
-                    }
-
-                    conn.execute("DELETE FROM source_assignments WHERE method_fqn = ?1 OR method_fqn LIKE ?2", [class_fqn, &class_prefix_like])?;
-                    conn.execute(
-                        "DELETE FROM call_sites WHERE method_fqn = ?1 OR method_fqn LIKE ?2",
-                        [class_fqn, &class_prefix_like],
-                    )?;
-                    conn.execute(
-                        "DELETE FROM class_annotations WHERE class_fqn = ?1",
-                        [class_fqn],
-                    )?;
-                    conn.execute(
-                        "DELETE FROM field_annotations WHERE class_fqn = ?1",
-                        [class_fqn],
-                    )?;
-                    conn.execute("DELETE FROM method_annotations WHERE method_fqn = ?1 OR method_fqn LIKE ?2", [class_fqn, &class_prefix_like])?;
-                    conn.execute("DELETE FROM parameter_annotations WHERE method_fqn = ?1 OR method_fqn LIKE ?2", [class_fqn, &class_prefix_like])?;
-                }
-
-                for file_path in dirty_files.iter().chain(deleted_files.iter()) {
-                    conn.execute(
-                        "DELETE FROM file_facts_metadata WHERE file_path = ?1",
-                        [file_path],
-                    )?;
-                    conn.execute("DELETE FROM file_hashes WHERE file_path = ?1", [file_path])?;
-                }
-
-                Ok(())
-            })();
-
-            if purge_res.is_ok() {
-                conn.execute("COMMIT;", [])?;
-            } else {
-                let _ = conn.execute("ROLLBACK;", []);
-                return purge_res;
-            }
-        }
-
-        // 6. Pre-populate Type Resolution
+        // 5. Pre-populate Type Resolution
         let mut workspace_classes = HashMap::new();
         let has_classes_table = conn
             .query_row(
@@ -407,7 +533,7 @@ impl JavaParser {
             }
         }
 
-        // 7. Parse only the dirty and new files
+        // 6. Parse only the dirty and new files
         let mut classes = Vec::new();
         let files_to_parse: Vec<String> = dirty_files
             .iter()
@@ -462,9 +588,83 @@ impl JavaParser {
             }
         }
 
-        // 8. Store populated facts in the database
-        conn.execute("BEGIN IMMEDIATE TRANSACTION;", [])?;
-        let populate_res = (|| -> Result<()> {
+        // 7. Perform DB modifications (Purge + Populate) in ONE single transaction
+        let mut tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let transaction_res = (|| -> Result<()> {
+            let conn = &mut tx;
+
+            // A. Purge old facts
+            if !classes_to_purge.is_empty() {
+                let mut methods_to_purge = std::collections::HashSet::new();
+                for class_fqn in &classes_to_purge {
+                    let mut stmt = conn.prepare(
+                        "SELECT method_fqn FROM method_declarations WHERE class_fqn = ?1",
+                    )?;
+                    let mut rows = stmt.query([class_fqn])?;
+                    while let Some(row) = rows.next()? {
+                        let m_fqn: String = row.get(0)?;
+                        methods_to_purge.insert(m_fqn);
+                    }
+                }
+
+                for class_fqn in &classes_to_purge {
+                    let class_prefix = format!("{}.", class_fqn);
+                    let class_prefix_like = format!("{}%", class_prefix);
+
+                    conn.execute("DELETE FROM classes WHERE fqn = ?1", [class_fqn])?;
+                    conn.execute(
+                        "DELETE FROM class_hierarchy WHERE class_fqn = ?1 OR parent_fqn = ?1",
+                        [class_fqn],
+                    )?;
+                    conn.execute(
+                        "DELETE FROM method_declarations WHERE class_fqn = ?1",
+                        [class_fqn],
+                    )?;
+                    conn.execute(
+                        "DELETE FROM allocation_sites WHERE class_fqn = ?1",
+                        [class_fqn],
+                    )?;
+
+                    let mut call_ids = Vec::new();
+                    {
+                        let mut stmt = conn.prepare("SELECT call_id FROM call_sites WHERE method_fqn = ?1 OR method_fqn LIKE ?2")?;
+                        let mut rows = stmt.query([class_fqn, &class_prefix_like])?;
+                        while let Some(row) = rows.next()? {
+                            let cid: String = row.get(0)?;
+                            call_ids.push(cid);
+                        }
+                    }
+                    for cid in call_ids {
+                        conn.execute("DELETE FROM call_arguments WHERE call_id = ?1", [&cid])?;
+                    }
+
+                    conn.execute("DELETE FROM source_assignments WHERE method_fqn = ?1 OR method_fqn LIKE ?2", [class_fqn, &class_prefix_like])?;
+                    conn.execute(
+                        "DELETE FROM call_sites WHERE method_fqn = ?1 OR method_fqn LIKE ?2",
+                        [class_fqn, &class_prefix_like],
+                    )?;
+                    conn.execute(
+                        "DELETE FROM class_annotations WHERE class_fqn = ?1",
+                        [class_fqn],
+                    )?;
+                    conn.execute(
+                        "DELETE FROM field_annotations WHERE class_fqn = ?1",
+                        [class_fqn],
+                    )?;
+                    conn.execute("DELETE FROM method_annotations WHERE method_fqn = ?1 OR method_fqn LIKE ?2", [class_fqn, &class_prefix_like])?;
+                    conn.execute("DELETE FROM parameter_annotations WHERE method_fqn = ?1 OR method_fqn LIKE ?2", [class_fqn, &class_prefix_like])?;
+                }
+
+                for file_path in dirty_files.iter().chain(deleted_files.iter()) {
+                    conn.execute(
+                        "DELETE FROM file_facts_metadata WHERE file_path = ?1",
+                        [file_path],
+                    )?;
+                    conn.execute("DELETE FROM file_hashes WHERE file_path = ?1", [file_path])?;
+                }
+            }
+
+            // B. Populate new facts
             for class in &classes {
                 let fqn = if class.package_name.is_empty() {
                     class.class_name.clone()
@@ -483,6 +683,7 @@ impl JavaParser {
                 )?;
 
                 for parent in &class.parents {
+                    tracing::debug!("DEBUG INSERT HIERARCHY: class='{}', parent='{}'", fqn, parent);
                     conn.execute(
                         "INSERT OR REPLACE INTO class_hierarchy (class_fqn, parent_fqn) VALUES (?1, ?2)",
                         [&fqn, parent],
@@ -496,20 +697,24 @@ impl JavaParser {
                     )?;
                 }
 
-                // Add fields to field_annotations as FieldType:TYPE
                 let mut fields_map = HashMap::new();
-                for (fname, ftype) in &class.fields {
-                    fields_map.insert(fname.clone(), ftype.clone());
-                    let field_type_ann = format!("FieldType:{}", ftype);
+                for field in &class.fields {
+                    fields_map.insert(field.name.clone(), field.field_type.clone());
+                    let field_type_ann = format!("FieldType:{}", field.field_type);
                     conn.execute(
                         "INSERT OR REPLACE INTO field_annotations (class_fqn, field_name, annotation_name) VALUES (?1, ?2, ?3)",
-                        [&fqn, fname, &field_type_ann],
+                        [&fqn, &field.name, &field_type_ann],
                     )?;
+                    for ann in &field.annotations {
+                        tracing::debug!("DEBUG INSERT FIELD ANN: fqn='{}', fname='{}', ann='{}'", fqn, field.name, ann);
+                        conn.execute(
+                            "INSERT OR REPLACE INTO field_annotations (class_fqn, field_name, annotation_name) VALUES (?1, ?2, ?3)",
+                            [&fqn, &field.name, ann],
+                        )?;
+                    }
                 }
 
-                // Field annotations
                 let _class_body_stripped = strip_comments(&class.class_name);
-
                 let mut alloc_counter = 0;
 
                 for method in &class.methods {
@@ -540,6 +745,7 @@ impl JavaParser {
                     )?;
 
                     for ann in &method.annotations {
+                        tracing::debug!("DEBUG INSERT METHOD ANN: method_fqn='{}', ann='{}'", method_fqn, ann);
                         conn.execute(
                             "INSERT OR REPLACE INTO method_annotations (method_fqn, annotation_name) VALUES (?1, ?2)",
                             [&method_fqn, ann],
@@ -601,7 +807,7 @@ impl JavaParser {
                 }
             }
 
-            // 9. Update file_hashes and file_facts_metadata for the newly parsed files
+            // C. Update file_hashes and file_facts_metadata
             for file_path in &files_to_parse {
                 if let Some(hash) = on_disk_hashes.get(file_path) {
                     conn.execute(
@@ -623,13 +829,10 @@ impl JavaParser {
             Ok(())
         })();
 
-        if populate_res.is_ok() {
-            conn.execute("COMMIT;", [])?;
-            Ok(())
-        } else {
-            let _ = conn.execute("ROLLBACK;", []);
-            populate_res
+        if transaction_res.is_ok() {
+            tx.commit()?;
         }
+        transaction_res
     }
 }
 
@@ -719,6 +922,11 @@ fn find_java_files(dir: &Path) -> Vec<std::path::PathBuf> {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
+                if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
+                    if name == "target" || name == "build" || name == ".git" || name == "node_modules" {
+                        continue;
+                    }
+                }
                 files.extend(find_java_files(&path));
             } else if path.extension().and_then(|s| s.to_str()) == Some("java") {
                 files.push(path);
@@ -728,7 +936,7 @@ fn find_java_files(dir: &Path) -> Vec<std::path::PathBuf> {
     files
 }
 
-fn strip_comments(code: &str) -> String {
+pub fn strip_comments(code: &str) -> String {
     let mut result = String::new();
     let chars: Vec<char> = code.chars().collect();
     let mut i = 0;
@@ -737,6 +945,8 @@ fn strip_comments(code: &str) -> String {
     let mut in_string = false;
     let mut in_char = false;
     let mut in_escape = false;
+    let mut in_annotation = false;
+    let mut paren_depth: usize = 0;
 
     while i < chars.len() {
         let c = chars[i];
@@ -753,12 +963,24 @@ fn strip_comments(code: &str) -> String {
         } else if in_string {
             if in_escape {
                 in_escape = false;
+                if in_annotation {
+                    result.push(c);
+                }
             } else if c == '\\' {
                 in_escape = true;
+                if in_annotation {
+                    result.push(c);
+                }
             } else if c == '"' {
                 in_string = false;
+                if in_annotation {
+                    result.push('"');
+                }
+            } else {
+                if in_annotation {
+                    result.push(c);
+                }
             }
-            // Replace characters in strings to normalize literals, but keep length or just clear
         } else if in_char {
             if in_escape {
                 in_escape = false;
@@ -774,11 +996,30 @@ fn strip_comments(code: &str) -> String {
             } else if c == '/' && i + 1 < chars.len() && chars[i + 1] == '*' {
                 in_block_comment = true;
                 i += 1;
+            } else if c == '@' {
+                in_annotation = true;
+                paren_depth = 0;
+                result.push(c);
+            } else if c == '(' {
+                if in_annotation {
+                    paren_depth += 1;
+                }
+                result.push(c);
+            } else if c == ')' {
+                if in_annotation {
+                    paren_depth = paren_depth.saturating_sub(1);
+                }
+                result.push(c);
+            } else if c == ';' || ((c == '{' || c == '}') && paren_depth == 0) {
+                in_annotation = false;
+                result.push(c);
             } else if c == '"' {
                 in_string = true;
                 in_escape = false;
                 result.push('"');
-                result.push('"');
+                if !in_annotation {
+                    result.push('"');
+                }
             } else if c == '\'' {
                 in_char = true;
                 in_escape = false;
@@ -793,7 +1034,7 @@ fn strip_comments(code: &str) -> String {
     result
 }
 
-fn parse_package_and_imports(
+pub fn parse_package_and_imports(
     code: &str,
 ) -> (String, Vec<String>, String, String, String, Vec<String>) {
     let mut pkg = String::new();
@@ -848,28 +1089,104 @@ fn parse_package_and_imports(
 
 fn resolve_parent_fqn(parent: &str, pkg: &str, imports: &[String]) -> String {
     let clean = parent.trim();
-    for imp in imports {
-        if imp.ends_with(&format!(".{}", clean)) {
-            return imp.clone();
+    let res = (|| {
+        for imp in imports {
+            if imp.ends_with(&format!(".{}", clean)) {
+                return imp.clone();
+            }
         }
-    }
-    if pkg.is_empty() {
-        clean.to_string()
-    } else {
-        format!("{}.{}", pkg, clean)
-    }
+        let std_classes = [
+            "String", "Object", "Class", "System", "Integer", "Long", "Double", "Float", "Boolean", "Byte", "Short",
+            "Character", "CharSequence", "Runnable", "Thread", "Throwable", "Exception", "RuntimeException", "Error",
+            "Void", "Cloneable", "Comparable"
+        ];
+        if std_classes.contains(&clean) {
+            return format!("java.lang.{}", clean);
+        }
+        if pkg.is_empty() {
+            clean.to_string()
+        } else {
+            format!("{}.{}", pkg, clean)
+        }
+    })();
+    tracing::debug!("DEBUG RESOLVE PARENT: parent='{}', pkg='{}', clean='{}', resolved='{}'", parent, pkg, clean, res);
+    res
 }
 
 fn parse_fields_annotations_from_body(_body: &str) -> HashMap<String, Vec<String>> {
     HashMap::new()
 }
 
-fn parse_class_body(
+fn parse_method_decl(
+    header: &str,
+    method_body: String,
+    class_fqn: &str,
+    package_name: &str,
+    imports: &[String],
+    annotations: &[String],
+) -> Option<JavaMethodInfo> {
+    let m_name = extract_method_name(header)?;
+    let is_constructor = m_name == class_fqn
+        || class_fqn.ends_with(&format!(".{}", m_name))
+        || (class_fqn.contains('$') && class_fqn.ends_with(&format!("${}", m_name)));
+    let clean_m_name = if is_constructor {
+        "<init>".to_string()
+    } else {
+        m_name
+    };
+
+    let signature = if let (Some(sp), Some(ep)) = (header.find('('), header.rfind(')')) {
+        if sp < ep {
+            header[sp + 1..ep].to_string()
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+
+    // Parameter annotations
+    let mut param_annotations = Vec::new();
+    let params_list = split_parameters(&signature);
+    for p in params_list {
+        let param_anns = extract_annotations_from_string(&p);
+        if let Some((p_name, p_type)) = extract_type_and_name(&p) {
+            for pa in param_anns {
+                param_annotations.push((p_name.clone(), pa));
+            }
+            // FieldType annotation for DI resolution
+            let clean_type = strip_generics(&p_type);
+            let resolved_pt = resolve_type_fqn_simple(
+                &clean_type,
+                package_name,
+                imports,
+                class_fqn,
+            );
+            param_annotations.push((
+                p_name.clone(),
+                format!("FieldType:{}", resolved_pt),
+            ));
+        }
+    }
+
+    let cleaned_annotations = extract_annotations_from_string(&annotations.join(" "));
+
+    Some(JavaMethodInfo {
+        method_name: clean_m_name,
+        signature,
+        body: method_body,
+        is_constructor,
+        annotations: cleaned_annotations,
+        parameter_annotations: param_annotations,
+    })
+}
+
+pub fn parse_class_body(
     package_name: &str,
     imports: &[String],
     class_fqn: &str,
     body: &str,
-) -> (Vec<(String, String)>, Vec<JavaMethodInfo>) {
+) -> (Vec<JavaFieldInfo>, Vec<JavaMethodInfo>) {
     let mut fields = Vec::new();
     let mut methods = Vec::new();
 
@@ -884,17 +1201,38 @@ fn parse_class_body(
         // Check for annotations at field/method declaration level
         let annotations = extract_and_strip_annotations_at(&chars, &mut i);
 
-        // Find next semicolon or brace
+        // Find next semicolon or brace (skipping property placeholders inside parentheses/annotations/strings)
         let mut sem_idx = None;
         let mut brace_idx = None;
+        let mut paren_depth: usize = 0;
+        let mut in_string = false;
+        let mut in_escape = false;
         for j in i..chars.len() {
-            if chars[j] == ';' {
-                sem_idx = Some(j);
-                break;
-            }
-            if chars[j] == '{' {
-                brace_idx = Some(j);
-                break;
+            let c = chars[j];
+            if in_string {
+                if in_escape {
+                    in_escape = false;
+                } else if c == '\\' {
+                    in_escape = true;
+                } else if c == '"' {
+                    in_string = false;
+                }
+            } else if c == '"' {
+                in_string = true;
+                in_escape = false;
+            } else if c == '(' {
+                paren_depth += 1;
+            } else if c == ')' {
+                paren_depth = paren_depth.saturating_sub(1);
+            } else if paren_depth == 0 {
+                if c == ';' {
+                    sem_idx = Some(j);
+                    break;
+                }
+                if c == '{' {
+                    brace_idx = Some(j);
+                    break;
+                }
             }
         }
 
@@ -902,7 +1240,12 @@ fn parse_class_body(
             (Some(s), None) => {
                 let decl: String = chars[i..s].iter().collect();
                 if let Some((name, ty)) = extract_field_info(&decl) {
-                    fields.push((name, ty));
+                    let field_anns = extract_annotations_from_string(&annotations.join(" "));
+                    fields.push(JavaFieldInfo {
+                        name,
+                        field_type: ty,
+                        annotations: field_anns,
+                    });
                 }
                 i = s + 1;
             }
@@ -911,7 +1254,12 @@ fn parse_class_body(
                     // Field declaration
                     let decl: String = chars[i..s].iter().collect();
                     if let Some((name, ty)) = extract_field_info(&decl) {
-                        fields.push((name, ty));
+                        let field_anns = extract_annotations_from_string(&annotations.join(" "));
+                        fields.push(JavaFieldInfo {
+                            name,
+                            field_type: ty,
+                            annotations: field_anns,
+                        });
                     }
                     i = s + 1;
                 } else {
@@ -920,60 +1268,15 @@ fn parse_class_body(
                         let header: String = chars[i..b].iter().collect();
                         let method_body: String = chars[b + 1..matching_brace].iter().collect();
 
-                        if let Some(m_name) = extract_method_name(&header) {
-                            let is_constructor = m_name == class_fqn
-                                || (class_fqn.contains('$')
-                                    && class_fqn.ends_with(&format!("${}", m_name)));
-                            let clean_m_name = if is_constructor {
-                                "<init>".to_string()
-                            } else {
-                                m_name
-                            };
-
-                            let signature = if let (Some(sp), Some(ep)) =
-                                (header.find('('), header.rfind(')'))
-                            {
-                                if sp < ep {
-                                    header[sp + 1..ep].to_string()
-                                } else {
-                                    String::new()
-                                }
-                            } else {
-                                String::new()
-                            };
-
-                            // Parameter annotations
-                            let mut param_annotations = Vec::new();
-                            let params_list = split_parameters(&signature);
-                            for p in params_list {
-                                let param_anns = extract_annotations_from_string(&p);
-                                if let Some((p_name, p_type)) = extract_type_and_name(&p) {
-                                    for pa in param_anns {
-                                        param_annotations.push((p_name.clone(), pa));
-                                    }
-                                    // FieldType annotation for DI resolution
-                                    let clean_type = strip_generics(&p_type);
-                                    let resolved_pt = resolve_type_fqn_simple(
-                                        &clean_type,
-                                        package_name,
-                                        imports,
-                                        class_fqn,
-                                    );
-                                    param_annotations.push((
-                                        p_name.clone(),
-                                        format!("FieldType:{}", resolved_pt),
-                                    ));
-                                }
-                            }
-
-                            methods.push(JavaMethodInfo {
-                                method_name: clean_m_name,
-                                signature,
-                                body: method_body,
-                                is_constructor,
-                                annotations,
-                                parameter_annotations: param_annotations,
-                            });
+                        if let Some(method_info) = parse_method_decl(
+                            &header,
+                            method_body,
+                            class_fqn,
+                            package_name,
+                            imports,
+                            &annotations,
+                        ) {
+                            methods.push(method_info);
                         }
                         i = matching_brace + 1;
                     } else {
@@ -986,34 +1289,15 @@ fn parse_class_body(
                 if let Some(matching_brace) = find_matching_brace(&chars, b) {
                     let header: String = chars[i..b].iter().collect();
                     let method_body: String = chars[b + 1..matching_brace].iter().collect();
-                    if let Some(m_name) = extract_method_name(&header) {
-                        let is_constructor = m_name == class_fqn
-                            || (class_fqn.contains('$')
-                                && class_fqn.ends_with(&format!("${}", m_name)));
-                        let clean_m_name = if is_constructor {
-                            "<init>".to_string()
-                        } else {
-                            m_name
-                        };
-                        let signature =
-                            if let (Some(sp), Some(ep)) = (header.find('('), header.rfind(')')) {
-                                if sp < ep {
-                                    header[sp + 1..ep].to_string()
-                                } else {
-                                    String::new()
-                                }
-                            } else {
-                                String::new()
-                            };
-
-                        methods.push(JavaMethodInfo {
-                            method_name: clean_m_name,
-                            signature,
-                            body: method_body,
-                            is_constructor,
-                            annotations,
-                            parameter_annotations: Vec::new(),
-                        });
+                    if let Some(method_info) = parse_method_decl(
+                        &header,
+                        method_body,
+                        class_fqn,
+                        package_name,
+                        imports,
+                        &annotations,
+                    ) {
+                        methods.push(method_info);
                     }
                     i = matching_brace + 1;
                 } else {
@@ -1040,6 +1324,14 @@ fn resolve_type_fqn_simple(
             return imp.clone();
         }
     }
+    let std_classes = [
+        "String", "Object", "Class", "System", "Integer", "Long", "Double", "Float", "Boolean", "Byte", "Short",
+        "Character", "CharSequence", "Runnable", "Thread", "Throwable", "Exception", "RuntimeException", "Error",
+        "Void", "Cloneable", "Comparable"
+    ];
+    if std_classes.contains(&type_name) {
+        return format!("java.lang.{}", type_name);
+    }
     if package_name.is_empty() {
         type_name.to_string()
     } else {
@@ -1057,8 +1349,46 @@ fn extract_method_name(header: &str) -> Option<String> {
     Some(name.to_string())
 }
 
+fn strip_annotations_from_decl(decl: &str) -> String {
+    let mut result = String::new();
+    let chars: Vec<char> = decl.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '@' {
+            i += 1;
+            while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_' || chars[i] == '$' || chars[i] == '.') {
+                i += 1;
+            }
+            let mut temp = i;
+            while temp < chars.len() && chars[temp].is_whitespace() {
+                temp += 1;
+            }
+            if temp < chars.len() && chars[temp] == '(' {
+                let mut depth = 1;
+                temp += 1;
+                while temp < chars.len() && depth > 0 {
+                    if chars[temp] == '(' {
+                        depth += 1;
+                    } else if chars[temp] == ')' {
+                        depth -= 1;
+                    }
+                    temp += 1;
+                }
+                i = temp;
+            } else {
+                i = temp;
+            }
+        } else {
+            result.push(chars[i]);
+            i += 1;
+        }
+    }
+    result.trim().to_string()
+}
+
 fn extract_type_and_name(decl: &str) -> Option<(String, String)> {
-    let decl = decl.trim();
+    let clean_decl = strip_annotations_from_decl(decl);
+    let decl = clean_decl.trim();
     if decl.is_empty() {
         return None;
     }
@@ -1544,6 +1874,14 @@ fn resolve_type_fqn(
     if let Some(fqn) = workspace_classes.get(clean_type_name) {
         return fqn.clone();
     }
+    let std_classes = [
+        "String", "Object", "Class", "System", "Integer", "Long", "Double", "Float", "Boolean", "Byte", "Short",
+        "Character", "CharSequence", "Runnable", "Thread", "Throwable", "Exception", "RuntimeException", "Error",
+        "Void", "Cloneable", "Comparable"
+    ];
+    if std_classes.contains(&clean_type_name) {
+        return format!("java.lang.{}", clean_type_name);
+    }
     if class.package_name.is_empty() {
         clean_type_name.to_string()
     } else {
@@ -1786,6 +2124,66 @@ fn process_rhs_expression(
             local_vars,
             fields_map,
         )?;
+
+        // Parse constructor arguments if any
+        if let Some(sp) = rhs_part.find('(') {
+            if let Some(ep) = rhs_part.rfind(')') {
+                if sp < ep {
+                    let args_str = &rhs_part[sp + 1..ep];
+                    let args = split_parameters(args_str);
+                    let mut arg_simple_vars = Vec::new();
+                    let mut arg_types = Vec::new();
+                    for arg in &args {
+                        let arg = arg.trim();
+                        if !arg.is_empty() {
+                            let ty = resolve_expression_type(arg, class, workspace_classes, local_vars, fields_map);
+                            arg_types.push(ty);
+                            let arg_simple = resolve_to_simple_var(
+                                arg,
+                                caller_fqn,
+                                alloc_counter,
+                                conn,
+                                class,
+                                workspace_classes,
+                                local_vars,
+                                fields_map,
+                            )?;
+                            arg_simple_vars.push(arg_simple);
+                        }
+                    }
+
+                    let static_callee = format!("{}.<init>({})", resolved_type, arg_types.join(","));
+                    let constructor_call_id = format!("{}:call_{}", caller_fqn, alloc_counter);
+                    *alloc_counter += 1;
+
+                    conn.execute(
+                        "INSERT OR REPLACE INTO call_sites (call_id, method_fqn, receiver, method_name, lhs, static_callee) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                        [
+                            Some(constructor_call_id.as_str()),
+                            Some(caller_fqn),
+                            Some(temp_var_fqn.as_str()),
+                            Some("<init>"),
+                            None,
+                            Some(static_callee.as_str()),
+                        ],
+                    )?;
+
+                    for (i, arg_simple) in arg_simple_vars.iter().enumerate() {
+                        let index_str = i.to_string();
+                        let arg_type_str = arg_types.get(i).cloned();
+                        conn.execute(
+                            "INSERT OR REPLACE INTO call_arguments (call_id, arg_index, arg_var, arg_type) VALUES (?1, ?2, ?3, ?4)",
+                            [
+                                Some(constructor_call_id.as_str()),
+                                Some(index_str.as_str()),
+                                Some(arg_simple.as_str()),
+                                arg_type_str.as_deref(),
+                            ],
+                        )?;
+                    }
+                }
+            }
+        }
     } else if let Some((receiver, method_name, args)) = parse_call_expr(rhs_part) {
         let resolved_receiver = match receiver {
             Some(ref rec) => {
@@ -2368,6 +2766,36 @@ fn extract_and_strip_annotations_at(chars: &[char], i: &mut usize) -> Vec<String
     annotations
 }
 
+fn extract_pointcut_from_args(args: &str) -> Option<String> {
+    let args = args.trim();
+    if let Some(idx) = args.find("pointcut") {
+        if let Some(sub) = args[idx..].find('=') {
+            let after_eq = args[idx + sub + 1..].trim();
+            if after_eq.starts_with('"') {
+                if let Some(end_quote) = after_eq[1..].find('"') {
+                    return Some(after_eq[1..1 + end_quote].to_string());
+                }
+            }
+        }
+    }
+    if let Some(idx) = args.find("value") {
+        if let Some(sub) = args[idx..].find('=') {
+            let after_eq = args[idx + sub + 1..].trim();
+            if after_eq.starts_with('"') {
+                if let Some(end_quote) = after_eq[1..].find('"') {
+                    return Some(after_eq[1..1 + end_quote].to_string());
+                }
+            }
+        }
+    }
+    if args.starts_with('"') {
+        if let Some(end_quote) = args[1..].find('"') {
+            return Some(args[1..1 + end_quote].to_string());
+        }
+    }
+    Some(args.to_string())
+}
+
 pub fn extract_annotations_from_string(s: &str) -> Vec<String> {
     let mut annotations = Vec::new();
     let chars: Vec<char> = s.chars().collect();
@@ -2415,6 +2843,21 @@ pub fn extract_annotations_from_string(s: &str) -> Vec<String> {
                     name
                 };
                 annotations.push(short_name.clone());
+                tracing::debug!("DEBUG: short_name = '{}', args = '{}'", short_name, args);
+
+                let is_route_ann = short_name == "RequestMapping"
+                    || short_name == "GetMapping"
+                    || short_name == "PostMapping"
+                    || short_name == "PutMapping"
+                    || short_name == "DeleteMapping"
+                    || short_name == "PatchMapping";
+
+                let is_aop_ann = short_name == "Before"
+                    || short_name == "After"
+                    || short_name == "Around"
+                    || short_name == "AfterThrowing"
+                    || short_name == "AfterReturning"
+                    || short_name == "Pointcut";
 
                 if (short_name == "Qualifier"
                     || short_name == "Service"
@@ -2422,20 +2865,30 @@ pub fn extract_annotations_from_string(s: &str) -> Vec<String> {
                     || short_name == "Repository"
                     || short_name == "Controller"
                     || short_name == "RestController"
-                    || short_name == "Value")
+                    || short_name == "Value"
+                    || is_route_ann
+                    || is_aop_ann)
                     && !args.is_empty()
                 {
                     let mut val = args.trim().to_string();
-                    if val.starts_with("value") {
-                        if let Some(eq_idx) = val.find('=') {
-                            val = val[eq_idx + 1..].trim().to_string();
-                        }
-                    }
-                    if val.starts_with('"') && val.ends_with('"') {
-                        val = val[1..val.len() - 1].to_string();
-                    }
-                    if !val.is_empty() {
+                    if is_route_ann {
                         annotations.push(format!("{}:{}", short_name, val));
+                    } else if is_aop_ann {
+                        if let Some(pc) = extract_pointcut_from_args(&val) {
+                            annotations.push(format!("{}:{}", short_name, pc));
+                        }
+                    } else {
+                        if val.starts_with("value") || val.starts_with("path") {
+                            if let Some(eq_idx) = val.find('=') {
+                                val = val[eq_idx + 1..].trim().to_string();
+                            }
+                        }
+                        if val.starts_with('"') && val.ends_with('"') {
+                            val = val[1..val.len() - 1].to_string();
+                        }
+                        if !val.is_empty() {
+                            annotations.push(format!("{}:{}", short_name, val));
+                        }
                     }
                 }
             }
@@ -2512,7 +2965,13 @@ fn split_assignment(stmt: &str) -> Option<(String, String)> {
                 } else {
                     let lhs: String = chars[..i].iter().collect();
                     let rhs: String = chars[i + 1..].iter().collect();
-                    return Some((lhs.trim().to_string(), rhs.trim().to_string()));
+                    let lhs_trimmed = lhs.trim();
+                    let clean_lhs = if let Some((name, _)) = extract_type_and_name(lhs_trimmed) {
+                        name
+                    } else {
+                        lhs_trimmed.to_string()
+                    };
+                    return Some((clean_lhs, rhs.trim().to_string()));
                 }
             }
         }
@@ -2802,8 +3261,16 @@ fn preprocess_statement(
 }
 
 fn compute_file_hash(path: &Path) -> std::io::Result<String> {
-    let content = std::fs::read(path)?;
-    Ok(crate::jar::sha256_hash(&content))
+    let metadata = std::fs::metadata(path)?;
+    let mtime = match metadata.modified() {
+        Ok(t) => match t.duration_since(std::time::SystemTime::UNIX_EPOCH) {
+            Ok(d) => d.as_nanos(),
+            Err(_) => 0,
+        },
+        Err(_) => 0,
+    };
+    let size = metadata.len();
+    Ok(format!("{}_{}", mtime, size))
 }
 
 #[cfg(test)]
@@ -2935,7 +3402,7 @@ mod tests {
         assert!(stripped.contains(r#"String javaCode = "";"#));
 
         let (fields, methods) = parse_class_body("", &[], "TestClass", &stripped);
-        let field_names: Vec<String> = fields.iter().map(|f| f.0.clone()).collect();
+        let field_names: Vec<String> = fields.iter().map(|f| f.name.clone()).collect();
         assert!(field_names.contains(&"url".to_string()));
         assert!(field_names.contains(&"sql".to_string()));
         assert!(field_names.contains(&"javaCode".to_string()));
@@ -2975,5 +3442,63 @@ mod tests {
             params[2],
             ("Map<String, Integer>".to_string(), "map".to_string())
         );
+    }
+
+    #[test]
+    fn test_debug_my_service_parsing() {
+        let code = r#"
+package com.test;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
+
+@Service
+public class MyService {
+    @Value("${server.port:8080}")
+    private String port;
+
+    @Value("${app.name}")
+    private String appName;
+
+    @Value("${app.missing:default-val}")
+    private String missing;
+
+    @Value("literal-value")
+    private String literal;
+
+    public MyService(@Value("${app.desc}") String desc) {
+    }
+}
+"#;
+        let body = r#"
+    @Value("${server.port:8080}")
+    private String port;
+
+    @Value("${app.name}")
+    private String appName;
+
+    @Value("${app.missing:default-val}")
+    private String missing;
+
+    @Value("literal-value")
+    private String literal;
+
+    public MyService(@Value("${app.desc}") String desc) {
+    }
+"#;
+        let stripped = strip_comments(body);
+        println!("STRIPPED:\n{}", stripped);
+
+        let (fields, methods) = parse_class_body(
+            "com.test",
+            &["org.springframework.beans.factory.annotation.Value".to_string()],
+            "com.test.MyService",
+            &stripped,
+        );
+
+        assert_eq!(fields.len(), 4);
+        assert_eq!(fields[0].name, "port");
+        assert_eq!(fields[0].annotations, vec!["Value", "Value:${server.port:8080}"]);
+        assert_eq!(methods.len(), 1);
+        assert_eq!(methods[0].method_name, "<init>");
     }
 }

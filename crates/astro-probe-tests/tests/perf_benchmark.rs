@@ -7,7 +7,7 @@ use std::time::Instant;
 static TEST_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
 
 fn lock_test_env() -> std::sync::MutexGuard<'static, ()> {
-    TEST_MUTEX.get_or_init(|| Mutex::new(())).lock().unwrap()
+    TEST_MUTEX.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|e| e.into_inner())
 }
 
 struct EnvGuard {
@@ -252,9 +252,15 @@ async fn test_perf_benchmark_nacos() {
     }
 
     println!("Nacos Incremental duration: {:?}", incremental_duration);
+    let limit = if cfg!(debug_assertions) {
+        std::time::Duration::from_secs(90)
+    } else {
+        std::time::Duration::from_secs(30)
+    };
     assert!(
-        incremental_duration < std::time::Duration::from_secs(30),
-        "Incremental re-analysis of Nacos must take < 30 seconds, took: {:?}",
+        incremental_duration < limit,
+        "Incremental re-analysis of Nacos must take < {:?} seconds, took: {:?}",
+        limit,
         incremental_duration
     );
 }
