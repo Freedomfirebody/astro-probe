@@ -591,290 +591,278 @@ pub fn parse_jar_file(jar_path: &Path, jar_hash: &str, global_conn: &mut Connect
     let file = File::open(jar_path)?;
     let mut archive = ZipArchive::new(file)?;
 
-    let global_conn = global_conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64;
+    let global_conn =
+        global_conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
 
-        global_conn.execute(
+    global_conn.execute(
             "INSERT OR REPLACE INTO cached_jars (jar_hash, jar_path, last_accessed) VALUES (?1, ?2, ?3)",
             [jar_hash, &jar_path.to_string_lossy(), &now.to_string()],
         )?;
 
-        for i in 0..archive.len() {
-            let mut file = archive.by_index(i)?;
-            if file.name().ends_with(".class") {
-                let mut bytes = Vec::new();
-                use std::io::Read;
-                if file.read_to_end(&mut bytes).is_err() {
-                    continue; // Skip corrupted class/file entry
-                }
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i)?;
+        if file.name().ends_with(".class") {
+            let mut bytes = Vec::new();
+            use std::io::Read;
+            if file.read_to_end(&mut bytes).is_err() {
+                continue; // Skip corrupted class/file entry
+            }
 
-                if let Ok(class_file) = cafebabe::parse_class(&bytes) {
-                    let class_fqn = class_file.this_class.replace('/', ".");
-                    let kind = if class_file
-                        .access_flags
-                        .contains(cafebabe::ClassAccessFlags::INTERFACE)
-                    {
-                        "interface"
-                    } else {
-                        "class"
-                    };
+            if let Ok(class_file) = cafebabe::parse_class(&bytes) {
+                let class_fqn = class_file.this_class.replace('/', ".");
+                let kind = if class_file
+                    .access_flags
+                    .contains(cafebabe::ClassAccessFlags::INTERFACE)
+                {
+                    "interface"
+                } else {
+                    "class"
+                };
 
-                    global_conn.execute(
+                global_conn.execute(
                         "INSERT OR REPLACE INTO cached_classes (jar_hash, fqn, kind) VALUES (?1, ?2, ?3)",
                         [jar_hash, &class_fqn, kind],
                     )?;
 
-                    if let Some(ref super_class) = class_file.super_class {
-                        let super_fqn = super_class.replace('/', ".");
-                        global_conn.execute(
+                if let Some(ref super_class) = class_file.super_class {
+                    let super_fqn = super_class.replace('/', ".");
+                    global_conn.execute(
                             "INSERT OR REPLACE INTO cached_class_hierarchy (jar_hash, class_fqn, parent_fqn) VALUES (?1, ?2, ?3)",
                             [jar_hash, &class_fqn, &super_fqn],
                         )?;
-                    }
+                }
 
-                    for interface in &class_file.interfaces {
-                        let interface_fqn = interface.replace('/', ".");
-                        global_conn.execute(
+                for interface in &class_file.interfaces {
+                    let interface_fqn = interface.replace('/', ".");
+                    global_conn.execute(
                             "INSERT OR REPLACE INTO cached_class_hierarchy (jar_hash, class_fqn, parent_fqn) VALUES (?1, ?2, ?3)",
                             [jar_hash, &class_fqn, &interface_fqn],
                         )?;
-                    }
+                }
 
-                    let mut call_site_counter = 0;
-                    for method in &class_file.methods {
-                        let method_name = &method.name;
-                        let desc = &method.descriptor;
+                let mut call_site_counter = 0;
+                for method in &class_file.methods {
+                    let method_name = &method.name;
+                    let desc = &method.descriptor;
 
-                        let param_types = parse_descriptor(desc);
-                        let param_names: Vec<String> = (0..param_types.len())
-                            .map(|idx| format!("p{}", idx))
-                            .collect();
-                        let params_str = param_names.join(",");
+                    let param_types = parse_descriptor(desc);
+                    let param_names: Vec<String> = (0..param_types.len())
+                        .map(|idx| format!("p{}", idx))
+                        .collect();
+                    let params_str = param_names.join(",");
 
-                        let signature = param_types.join(",");
-                        let method_fqn = format!("{}.{}({})", class_fqn, method_name, signature);
+                    let signature = param_types.join(",");
+                    let method_fqn = format!("{}.{}({})", class_fqn, method_name, signature);
 
-                        global_conn.execute(
+                    global_conn.execute(
                             "INSERT OR REPLACE INTO cached_method_declarations (jar_hash, method_fqn, class_fqn, method_name, params) VALUES (?1, ?2, ?3, ?4, ?5)",
                             [jar_hash, &method_fqn, &class_fqn, method_name, &params_str],
                         )?;
 
-                        for (idx, param_name) in param_names.iter().enumerate() {
-                            let param_node = format!("{}#{}", method_fqn, param_name);
-                            let pos_node = format!("{}#p{}", method_fqn, idx);
-                            global_conn.execute(
+                    for (idx, param_name) in param_names.iter().enumerate() {
+                        let param_node = format!("{}#{}", method_fqn, param_name);
+                        let pos_node = format!("{}#p{}", method_fqn, idx);
+                        global_conn.execute(
                                 "INSERT OR REPLACE INTO cached_source_assignments (jar_hash, lhs, rhs, assignment_type, method_fqn) VALUES (?1, ?2, ?3, 'COPY', ?4)",
                                 [jar_hash, &param_node, &pos_node, &method_fqn],
                             )?;
-                        }
+                    }
 
-                        for attr in &method.attributes {
-                            if let cafebabe::attributes::AttributeData::Code(ref code_attr) =
-                                attr.data
-                            {
-                                let mut locals = vec![
-                                    None;
-                                    (code_attr.max_locals as usize)
-                                        .max(param_names.len() * 2 + 2)
-                                ];
-                                let is_static = method
-                                    .access_flags
-                                    .contains(cafebabe::MethodAccessFlags::STATIC);
-                                let mut current_slot = if is_static { 0 } else { 1 };
-                                for (idx, param_type) in param_types.iter().enumerate() {
-                                    if current_slot < locals.len() {
-                                        locals[current_slot] = Some(idx);
-                                    }
-                                    if param_type == "long" || param_type == "double" {
-                                        current_slot += 2;
-                                    } else {
-                                        current_slot += 1;
-                                    }
+                    for attr in &method.attributes {
+                        if let cafebabe::attributes::AttributeData::Code(ref code_attr) = attr.data
+                        {
+                            let mut locals = vec![
+                                None;
+                                (code_attr.max_locals as usize)
+                                    .max(param_names.len() * 2 + 2)
+                            ];
+                            let is_static = method
+                                .access_flags
+                                .contains(cafebabe::MethodAccessFlags::STATIC);
+                            let mut current_slot = if is_static { 0 } else { 1 };
+                            for (idx, param_type) in param_types.iter().enumerate() {
+                                if current_slot < locals.len() {
+                                    locals[current_slot] = Some(idx);
                                 }
+                                if param_type == "long" || param_type == "double" {
+                                    current_slot += 2;
+                                } else {
+                                    current_slot += 1;
+                                }
+                            }
 
-                                let code = &code_attr.code;
-                                let mut ip: usize = 0;
-                                let mut stack = Vec::new();
+                            let code = &code_attr.code;
+                            let mut ip: usize = 0;
+                            let mut stack = Vec::new();
 
-                                while ip < code.len() {
-                                    let opcode = code[ip];
-                                    match opcode {
-                                        21..=25 | 26..=45 => {
-                                            if let Some((slot, len)) =
-                                                get_load_opcode_slot(opcode, code, ip)
-                                            {
-                                                let val = if slot < locals.len() {
-                                                    locals[slot]
-                                                } else {
-                                                    None
-                                                };
-                                                stack.push(val);
-                                                ip += len;
-                                            } else {
-                                                ip += 1;
-                                            }
-                                        }
-                                        54..=58 | 59..=78 => {
-                                            if let Some((slot, len)) =
-                                                get_store_opcode_slot(opcode, code, ip)
-                                            {
-                                                let val = stack.pop().flatten();
-                                                if slot < locals.len() {
-                                                    locals[slot] = val;
-                                                }
-                                                ip += len;
-                                            } else {
-                                                ip += 1;
-                                            }
-                                        }
-                                        89 => {
-                                            // dup
-                                            let val =
-                                                if let Some(v) = stack.last() { *v } else { None };
-                                            stack.push(val);
-                                            ip += 1;
-                                        }
-                                        133..=147 => {
-                                            // primitive casts
-                                            let val = if !stack.is_empty() {
-                                                stack.pop().flatten()
+                            while ip < code.len() {
+                                let opcode = code[ip];
+                                match opcode {
+                                    21..=25 | 26..=45 => {
+                                        if let Some((slot, len)) =
+                                            get_load_opcode_slot(opcode, code, ip)
+                                        {
+                                            let val = if slot < locals.len() {
+                                                locals[slot]
                                             } else {
                                                 None
                                             };
                                             stack.push(val);
+                                            ip += len;
+                                        } else {
                                             ip += 1;
                                         }
-                                        192 => {
-                                            // checkcast
-                                            let val = if !stack.is_empty() {
-                                                stack.pop().flatten()
-                                            } else {
-                                                None
-                                            };
-                                            stack.push(val);
-                                            ip += 3;
+                                    }
+                                    54..=58 | 59..=78 => {
+                                        if let Some((slot, len)) =
+                                            get_store_opcode_slot(opcode, code, ip)
+                                        {
+                                            let val = stack.pop().flatten();
+                                            if slot < locals.len() {
+                                                locals[slot] = val;
+                                            }
+                                            ip += len;
+                                        } else {
+                                            ip += 1;
                                         }
-                                        172..=176 => {
-                                            // returns with value
-                                            if !stack.is_empty() {
-                                                if let Some(param_idx) = stack.last().unwrap() {
-                                                    global_conn.execute(
+                                    }
+                                    89 => {
+                                        // dup
+                                        let val =
+                                            if let Some(v) = stack.last() { *v } else { None };
+                                        stack.push(val);
+                                        ip += 1;
+                                    }
+                                    133..=147 => {
+                                        // primitive casts
+                                        let val = if !stack.is_empty() {
+                                            stack.pop().flatten()
+                                        } else {
+                                            None
+                                        };
+                                        stack.push(val);
+                                        ip += 1;
+                                    }
+                                    192 => {
+                                        // checkcast
+                                        let val = if !stack.is_empty() {
+                                            stack.pop().flatten()
+                                        } else {
+                                            None
+                                        };
+                                        stack.push(val);
+                                        ip += 3;
+                                    }
+                                    172..=176 => {
+                                        // returns with value
+                                        if !stack.is_empty() {
+                                            if let Some(param_idx) = stack.last().unwrap() {
+                                                global_conn.execute(
                                                         "INSERT OR REPLACE INTO cached_method_summaries (jar_hash, method_fqn, param_index) VALUES (?1, ?2, ?3)",
                                                         [jar_hash, &method_fqn, &param_idx.to_string()],
                                                     )?;
-                                                }
                                             }
-                                            stack.pop();
-                                            ip += 1;
                                         }
-                                        182..=185 => {
-                                            // invokes
-                                            if ip + 2 < code.len() {
-                                                let cp_idx = u16::from_be_bytes([
-                                                    code[ip + 1],
-                                                    code[ip + 2],
-                                                ]);
-                                                let extra = if opcode == 185 { 2 } else { 0 };
-                                                ip += 3 + extra;
+                                        stack.pop();
+                                        ip += 1;
+                                    }
+                                    182..=185 => {
+                                        // invokes
+                                        if ip + 2 < code.len() {
+                                            let cp_idx =
+                                                u16::from_be_bytes([code[ip + 1], code[ip + 2]]);
+                                            let extra = if opcode == 185 { 2 } else { 0 };
+                                            ip += 3 + extra;
 
-                                                if let Some((
-                                                    callee_class,
-                                                    callee_name,
-                                                    callee_desc,
-                                                )) = resolve_method_ref(&class_file, cp_idx)
-                                                {
-                                                    let callee_param_types =
-                                                        parse_descriptor(&callee_desc);
-                                                    let num_args = callee_param_types.len();
+                                            if let Some((callee_class, callee_name, callee_desc)) =
+                                                resolve_method_ref(&class_file, cp_idx)
+                                            {
+                                                let callee_param_types =
+                                                    parse_descriptor(&callee_desc);
+                                                let num_args = callee_param_types.len();
 
-                                                    let mut args = Vec::new();
-                                                    for _ in 0..num_args {
-                                                        if !stack.is_empty() {
-                                                            args.push(stack.pop().unwrap());
-                                                        } else {
-                                                            args.push(None);
-                                                        }
+                                                let mut args = Vec::new();
+                                                for _ in 0..num_args {
+                                                    if !stack.is_empty() {
+                                                        args.push(stack.pop().unwrap());
+                                                    } else {
+                                                        args.push(None);
                                                     }
-                                                    args.reverse();
+                                                }
+                                                args.reverse();
 
-                                                    let receiver_val = if opcode != 184 {
-                                                        if !stack.is_empty() {
-                                                            stack.pop().unwrap()
-                                                        } else {
-                                                            None
-                                                        }
+                                                let receiver_val = if opcode != 184 {
+                                                    if !stack.is_empty() {
+                                                        stack.pop().unwrap()
                                                     } else {
                                                         None
-                                                    };
-
-                                                    let is_void = callee_desc.ends_with('V');
-                                                    if !is_void {
-                                                        stack.push(None);
                                                     }
+                                                } else {
+                                                    None
+                                                };
 
-                                                    let call_id = format!(
-                                                        "{}:call_{}",
-                                                        method_fqn, call_site_counter
-                                                    );
-                                                    call_site_counter += 1;
+                                                let is_void = callee_desc.ends_with('V');
+                                                if !is_void {
+                                                    stack.push(None);
+                                                }
 
-                                                    let receiver_node =
-                                                        receiver_val.map(|param_idx| {
+                                                let call_id = format!(
+                                                    "{}:call_{}",
+                                                    method_fqn, call_site_counter
+                                                );
+                                                call_site_counter += 1;
+
+                                                let receiver_node = receiver_val.map(|param_idx| {
+                                                    let param_name =
+                                                        if param_idx < param_names.len() {
+                                                            &param_names[param_idx]
+                                                        } else {
+                                                            "p"
+                                                        };
+                                                    format!("{}#{}", method_fqn, param_name)
+                                                });
+
+                                                let mut arg_types = Vec::new();
+                                                let mut arg_vars = Vec::new();
+                                                for (arg_idx, arg_val) in args.iter().enumerate() {
+                                                    let arg_type =
+                                                        if arg_idx < callee_param_types.len() {
+                                                            callee_param_types[arg_idx].clone()
+                                                        } else {
+                                                            "java.lang.Object".to_string()
+                                                        };
+                                                    arg_types.push(arg_type.clone());
+
+                                                    let arg_var = match arg_val {
+                                                        Some(param_idx) => {
                                                             let param_name =
-                                                                if param_idx < param_names.len() {
-                                                                    &param_names[param_idx]
-                                                                } else {
-                                                                    "p"
-                                                                };
-                                                            format!("{}#{}", method_fqn, param_name)
-                                                        });
-
-                                                    let mut arg_types = Vec::new();
-                                                    let mut arg_vars = Vec::new();
-                                                    for (arg_idx, arg_val) in
-                                                        args.iter().enumerate()
-                                                    {
-                                                        let arg_type =
-                                                            if arg_idx < callee_param_types.len() {
-                                                                callee_param_types[arg_idx].clone()
-                                                            } else {
-                                                                "java.lang.Object".to_string()
-                                                            };
-                                                        arg_types.push(arg_type.clone());
-
-                                                        let arg_var = match arg_val {
-                                                            Some(param_idx) => {
-                                                                let param_name = if *param_idx
-                                                                    < param_names.len()
-                                                                {
+                                                                if *param_idx < param_names.len() {
                                                                     &param_names[*param_idx]
                                                                 } else {
                                                                     "p"
                                                                 };
-                                                                format!(
-                                                                    "{}#{}",
-                                                                    method_fqn, param_name
-                                                                )
-                                                            }
-                                                            None => format!(
-                                                                "{}:call_arg_{}",
-                                                                call_id, arg_idx
-                                                            ),
-                                                        };
-                                                        arg_vars.push(arg_var);
-                                                    }
+                                                            format!("{}#{}", method_fqn, param_name)
+                                                        }
+                                                        None => format!(
+                                                            "{}:call_arg_{}",
+                                                            call_id, arg_idx
+                                                        ),
+                                                    };
+                                                    arg_vars.push(arg_var);
+                                                }
 
-                                                    let static_callee = format!(
-                                                        "{}.{}({})",
-                                                        callee_class,
-                                                        callee_name,
-                                                        callee_param_types.join(",")
-                                                    );
+                                                let static_callee = format!(
+                                                    "{}.{}({})",
+                                                    callee_class,
+                                                    callee_name,
+                                                    callee_param_types.join(",")
+                                                );
 
-                                                    global_conn.execute(
+                                                global_conn.execute(
                                                         "INSERT OR REPLACE INTO cached_call_sites (jar_hash, call_id, method_fqn, receiver, method_name, lhs, static_callee) VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6)",
                                                         [
                                                             Some(jar_hash.to_string()),
@@ -886,12 +874,12 @@ pub fn parse_jar_file(jar_path: &Path, jar_hash: &str, global_conn: &mut Connect
                                                         ],
                                                     )?;
 
-                                                    for (arg_idx, (arg_var, arg_type)) in arg_vars
-                                                        .iter()
-                                                        .zip(arg_types.iter())
-                                                        .enumerate()
-                                                    {
-                                                        global_conn.execute(
+                                                for (arg_idx, (arg_var, arg_type)) in arg_vars
+                                                    .iter()
+                                                    .zip(arg_types.iter())
+                                                    .enumerate()
+                                                {
+                                                    global_conn.execute(
                                                             "INSERT OR REPLACE INTO cached_call_arguments (jar_hash, call_id, arg_index, arg_var, arg_type) VALUES (?1, ?2, ?3, ?4, ?5)",
                                                             [
                                                                 Some(jar_hash.to_string()),
@@ -901,168 +889,123 @@ pub fn parse_jar_file(jar_path: &Path, jar_hash: &str, global_conn: &mut Connect
                                                                 Some(arg_type.clone()),
                                                             ],
                                                         )?;
-                                                    }
+                                                }
 
-                                                    let caller_stripped =
-                                                        strip_signature(&method_fqn);
-                                                    let callee_stripped =
-                                                        format!("{}.{}", callee_class, callee_name);
-                                                    global_conn.execute(
+                                                let caller_stripped = strip_signature(&method_fqn);
+                                                let callee_stripped =
+                                                    format!("{}.{}", callee_class, callee_name);
+                                                global_conn.execute(
                                                         "INSERT OR REPLACE INTO cached_call_edges (jar_hash, caller, callee, is_virtual) VALUES (?1, ?2, ?3, 0)",
                                                         [jar_hash, caller_stripped, &callee_stripped],
                                                     )?;
-                                                }
-                                            } else {
-                                                ip += 1;
                                             }
+                                        } else {
+                                            ip += 1;
                                         }
-                                        196 => {
-                                            if ip + 1 < code.len() {
-                                                let sub_op = code[ip + 1];
-                                                match sub_op {
-                                                    25 => {
-                                                        if ip + 3 < code.len() {
-                                                            let idx = u16::from_be_bytes([
-                                                                code[ip + 2],
-                                                                code[ip + 3],
-                                                            ])
-                                                                as usize;
-                                                            let val = if idx < locals.len() {
-                                                                locals[idx]
-                                                            } else {
-                                                                None
-                                                            };
-                                                            stack.push(val);
-                                                            ip += 4;
+                                    }
+                                    196 => {
+                                        if ip + 1 < code.len() {
+                                            let sub_op = code[ip + 1];
+                                            match sub_op {
+                                                25 => {
+                                                    if ip + 3 < code.len() {
+                                                        let idx = u16::from_be_bytes([
+                                                            code[ip + 2],
+                                                            code[ip + 3],
+                                                        ])
+                                                            as usize;
+                                                        let val = if idx < locals.len() {
+                                                            locals[idx]
                                                         } else {
-                                                            ip += 2;
-                                                        }
-                                                    }
-                                                    58 => {
-                                                        if ip + 3 < code.len() {
-                                                            let idx = u16::from_be_bytes([
-                                                                code[ip + 2],
-                                                                code[ip + 3],
-                                                            ])
-                                                                as usize;
-                                                            let val = stack.pop().flatten();
-                                                            if idx < locals.len() {
-                                                                locals[idx] = val;
-                                                            }
-                                                            ip += 4;
-                                                        } else {
-                                                            ip += 2;
-                                                        }
-                                                    }
-                                                    21 | 22 | 23 | 24 => {
-                                                        if ip + 3 < code.len() {
-                                                            stack.push(None);
-                                                            ip += 4;
-                                                        } else {
-                                                            ip += 2;
-                                                        }
-                                                    }
-                                                    54 | 55 | 56 | 57 => {
-                                                        if ip + 3 < code.len() {
-                                                            let _ = stack.pop();
-                                                            ip += 4;
-                                                        } else {
-                                                            ip += 2;
-                                                        }
-                                                    }
-                                                    169 => {
-                                                        if ip + 3 < code.len() {
-                                                            ip += 4;
-                                                        } else {
-                                                            ip += 2;
-                                                        }
-                                                    }
-                                                    132 => {
-                                                        if ip + 5 < code.len() {
-                                                            ip += 6;
-                                                        } else {
-                                                            ip += 2;
-                                                        }
-                                                    }
-                                                    _ => {
+                                                            None
+                                                        };
+                                                        stack.push(val);
+                                                        ip += 4;
+                                                    } else {
                                                         ip += 2;
                                                     }
                                                 }
-                                            } else {
-                                                ip += 1;
-                                            }
-                                        }
-                                        170 => {
-                                            stack.pop();
-                                            ip += 1;
-                                            while ip % 4 != 0 {
-                                                ip += 1;
-                                            }
-                                            if ip + 12 <= code.len() {
-                                                let low = i32::from_be_bytes([
-                                                    code[ip + 4],
-                                                    code[ip + 5],
-                                                    code[ip + 6],
-                                                    code[ip + 7],
-                                                ]);
-                                                let high = i32::from_be_bytes([
-                                                    code[ip + 8],
-                                                    code[ip + 9],
-                                                    code[ip + 10],
-                                                    code[ip + 11],
-                                                ]);
-                                                ip += 12;
-                                                if high >= low {
-                                                    if let Some(count) = high
-                                                        .checked_sub(low)
-                                                        .and_then(|diff| diff.checked_add(1))
-                                                    {
-                                                        let count_usize = count as usize;
-                                                        if let Some(offset) =
-                                                            count_usize.checked_mul(4)
-                                                        {
-                                                            if let Some(next_ip) =
-                                                                ip.checked_add(offset)
-                                                            {
-                                                                if next_ip <= code.len() {
-                                                                    ip = next_ip;
-                                                                } else {
-                                                                    ip = code.len();
-                                                                }
-                                                            } else {
-                                                                ip = code.len();
-                                                            }
-                                                        } else {
-                                                            ip = code.len();
+                                                58 => {
+                                                    if ip + 3 < code.len() {
+                                                        let idx = u16::from_be_bytes([
+                                                            code[ip + 2],
+                                                            code[ip + 3],
+                                                        ])
+                                                            as usize;
+                                                        let val = stack.pop().flatten();
+                                                        if idx < locals.len() {
+                                                            locals[idx] = val;
                                                         }
+                                                        ip += 4;
                                                     } else {
-                                                        ip = code.len();
+                                                        ip += 2;
                                                     }
-                                                } else {
-                                                    ip = code.len();
                                                 }
-                                            } else {
-                                                ip = code.len();
+                                                21 | 22 | 23 | 24 => {
+                                                    if ip + 3 < code.len() {
+                                                        stack.push(None);
+                                                        ip += 4;
+                                                    } else {
+                                                        ip += 2;
+                                                    }
+                                                }
+                                                54 | 55 | 56 | 57 => {
+                                                    if ip + 3 < code.len() {
+                                                        let _ = stack.pop();
+                                                        ip += 4;
+                                                    } else {
+                                                        ip += 2;
+                                                    }
+                                                }
+                                                169 => {
+                                                    if ip + 3 < code.len() {
+                                                        ip += 4;
+                                                    } else {
+                                                        ip += 2;
+                                                    }
+                                                }
+                                                132 => {
+                                                    if ip + 5 < code.len() {
+                                                        ip += 6;
+                                                    } else {
+                                                        ip += 2;
+                                                    }
+                                                }
+                                                _ => {
+                                                    ip += 2;
+                                                }
                                             }
-                                        }
-                                        171 => {
-                                            stack.pop();
+                                        } else {
                                             ip += 1;
-                                            while ip % 4 != 0 {
-                                                ip += 1;
-                                            }
-                                            if ip + 8 <= code.len() {
-                                                let npairs = i32::from_be_bytes([
-                                                    code[ip + 4],
-                                                    code[ip + 5],
-                                                    code[ip + 6],
-                                                    code[ip + 7],
-                                                ]);
-                                                ip += 8;
-                                                if npairs > 0 {
-                                                    let npairs_usize = npairs as usize;
-                                                    if let Some(offset) =
-                                                        npairs_usize.checked_mul(8)
+                                        }
+                                    }
+                                    170 => {
+                                        stack.pop();
+                                        ip += 1;
+                                        while ip % 4 != 0 {
+                                            ip += 1;
+                                        }
+                                        if ip + 12 <= code.len() {
+                                            let low = i32::from_be_bytes([
+                                                code[ip + 4],
+                                                code[ip + 5],
+                                                code[ip + 6],
+                                                code[ip + 7],
+                                            ]);
+                                            let high = i32::from_be_bytes([
+                                                code[ip + 8],
+                                                code[ip + 9],
+                                                code[ip + 10],
+                                                code[ip + 11],
+                                            ]);
+                                            ip += 12;
+                                            if high >= low {
+                                                if let Some(count) = high
+                                                    .checked_sub(low)
+                                                    .and_then(|diff| diff.checked_add(1))
+                                                {
+                                                    let count_usize = count as usize;
+                                                    if let Some(offset) = count_usize.checked_mul(4)
                                                     {
                                                         if let Some(next_ip) =
                                                             ip.checked_add(offset)
@@ -1078,23 +1021,61 @@ pub fn parse_jar_file(jar_path: &Path, jar_hash: &str, global_conn: &mut Connect
                                                     } else {
                                                         ip = code.len();
                                                     }
+                                                } else {
+                                                    ip = code.len();
                                                 }
                                             } else {
                                                 ip = code.len();
                                             }
+                                        } else {
+                                            ip = code.len();
                                         }
-                                        _ => {
-                                            let (pop, push) = get_opcode_stack_effect(opcode);
-                                            for _ in 0..pop {
-                                                if !stack.is_empty() {
-                                                    stack.pop();
+                                    }
+                                    171 => {
+                                        stack.pop();
+                                        ip += 1;
+                                        while ip % 4 != 0 {
+                                            ip += 1;
+                                        }
+                                        if ip + 8 <= code.len() {
+                                            let npairs = i32::from_be_bytes([
+                                                code[ip + 4],
+                                                code[ip + 5],
+                                                code[ip + 6],
+                                                code[ip + 7],
+                                            ]);
+                                            ip += 8;
+                                            if npairs > 0 {
+                                                let npairs_usize = npairs as usize;
+                                                if let Some(offset) = npairs_usize.checked_mul(8) {
+                                                    if let Some(next_ip) = ip.checked_add(offset) {
+                                                        if next_ip <= code.len() {
+                                                            ip = next_ip;
+                                                        } else {
+                                                            ip = code.len();
+                                                        }
+                                                    } else {
+                                                        ip = code.len();
+                                                    }
+                                                } else {
+                                                    ip = code.len();
                                                 }
                                             }
-                                            for _ in 0..push {
-                                                stack.push(None);
-                                            }
-                                            ip += get_opcode_len(opcode);
+                                        } else {
+                                            ip = code.len();
                                         }
+                                    }
+                                    _ => {
+                                        let (pop, push) = get_opcode_stack_effect(opcode);
+                                        for _ in 0..pop {
+                                            if !stack.is_empty() {
+                                                stack.pop();
+                                            }
+                                        }
+                                        for _ in 0..push {
+                                            stack.push(None);
+                                        }
+                                        ip += get_opcode_len(opcode);
                                     }
                                 }
                             }
@@ -1103,8 +1084,9 @@ pub fn parse_jar_file(jar_path: &Path, jar_hash: &str, global_conn: &mut Connect
                 }
             }
         }
-        global_conn.commit()?;
-        Ok(())
+    }
+    global_conn.commit()?;
+    Ok(())
 }
 
 pub fn copy_jar_facts_to_local(conn: &mut Connection, jar_hash: &str) -> Result<()> {
@@ -1247,7 +1229,9 @@ fn parse_pom_file(path: &Path) -> std::result::Result<RawPomInfo, JavaError> {
                     continue;
                 }
 
-                if path_stack.starts_with(&["project".to_string(), "parent".to_string()]) && path_stack.len() == 3 {
+                if path_stack.starts_with(&["project".to_string(), "parent".to_string()])
+                    && path_stack.len() == 3
+                {
                     match path_stack[2].as_str() {
                         "groupId" => info.parent_group_id = val,
                         "artifactId" => info.parent_artifact_id = val,
@@ -1262,7 +1246,9 @@ fn parse_pom_file(path: &Path) -> std::result::Result<RawPomInfo, JavaError> {
                         "version" => info.version = val,
                         _ => {}
                     }
-                } else if path_stack.starts_with(&["project".to_string(), "properties".to_string()]) && path_stack.len() == 3 {
+                } else if path_stack.starts_with(&["project".to_string(), "properties".to_string()])
+                    && path_stack.len() == 3
+                {
                     info.properties.insert(path_stack[2].clone(), val);
                 } else if path_stack.contains(&"dependency".to_string()) {
                     if let Some(pos) = path_stack.iter().position(|r| r == "dependency") {
@@ -1290,16 +1276,28 @@ struct ResolvedPom {
     properties: HashMap<String, String>,
 }
 
-fn resolve_pom_recursive(pom_path: &Path, m2_repo: &Path) -> std::result::Result<ResolvedPom, JavaError> {
-    fn resolve_pom_inner(pom_path: &Path, m2_repo: &Path, depth: usize) -> std::result::Result<ResolvedPom, JavaError> {
+fn resolve_pom_recursive(
+    pom_path: &Path,
+    m2_repo: &Path,
+) -> std::result::Result<ResolvedPom, JavaError> {
+    fn resolve_pom_inner(
+        pom_path: &Path,
+        m2_repo: &Path,
+        depth: usize,
+    ) -> std::result::Result<ResolvedPom, JavaError> {
         if depth > 10 {
-            return Err(JavaError::Other("Cyclic pom.xml parent hierarchy detected".to_string()));
+            return Err(JavaError::Other(
+                "Cyclic pom.xml parent hierarchy detected".to_string(),
+            ));
         }
         let raw = parse_pom_file(pom_path)?;
         let mut properties = HashMap::new();
         let mut dependency_management = HashMap::new();
 
-        if !raw.parent_group_id.is_empty() && !raw.parent_artifact_id.is_empty() && !raw.parent_version.is_empty() {
+        if !raw.parent_group_id.is_empty()
+            && !raw.parent_artifact_id.is_empty()
+            && !raw.parent_version.is_empty()
+        {
             let mut parent_pom_path = None;
 
             if let Some(ref rel) = raw.parent_relative_path {
@@ -1328,7 +1326,10 @@ fn resolve_pom_recursive(pom_path: &Path, m2_repo: &Path) -> std::result::Result
                     .join(raw.parent_group_id.replace('.', "/"))
                     .join(&raw.parent_artifact_id)
                     .join(&raw.parent_version)
-                    .join(format!("{}-{}.pom", raw.parent_artifact_id, raw.parent_version));
+                    .join(format!(
+                        "{}-{}.pom",
+                        raw.parent_artifact_id, raw.parent_version
+                    ));
                 if m2_parent.exists() {
                     parent_pom_path = Some(m2_parent);
                 }
@@ -1350,8 +1351,16 @@ fn resolve_pom_recursive(pom_path: &Path, m2_repo: &Path) -> std::result::Result
             }
         }
 
-        let project_group_id = if raw.group_id.is_empty() { raw.parent_group_id.clone() } else { raw.group_id.clone() };
-        let project_version = if raw.version.is_empty() { raw.parent_version.clone() } else { raw.version.clone() };
+        let project_group_id = if raw.group_id.is_empty() {
+            raw.parent_group_id.clone()
+        } else {
+            raw.group_id.clone()
+        };
+        let project_version = if raw.version.is_empty() {
+            raw.parent_version.clone()
+        } else {
+            raw.version.clone()
+        };
         properties.insert("project.groupId".to_string(), project_group_id.clone());
         properties.insert("pom.groupId".to_string(), project_group_id.clone());
         properties.insert("project.artifactId".to_string(), raw.artifact_id.clone());
@@ -1360,8 +1369,14 @@ fn resolve_pom_recursive(pom_path: &Path, m2_repo: &Path) -> std::result::Result
         properties.insert("pom.version".to_string(), project_version.clone());
 
         if !raw.parent_group_id.is_empty() {
-            properties.insert("project.parent.groupId".to_string(), raw.parent_group_id.clone());
-            properties.insert("project.parent.version".to_string(), raw.parent_version.clone());
+            properties.insert(
+                "project.parent.groupId".to_string(),
+                raw.parent_group_id.clone(),
+            );
+            properties.insert(
+                "project.parent.version".to_string(),
+                raw.parent_version.clone(),
+            );
         }
 
         let mut resolved_dependencies = Vec::new();
@@ -1399,7 +1414,12 @@ fn interpolate(val: &str, properties: &HashMap<String, String>) -> String {
             if let Some(end) = result[start..].find('}') {
                 let key = &result[start + 2..start + end];
                 if let Some(replacement) = properties.get(key) {
-                    result = format!("{}{}{}", &result[..start], replacement, &result[start + end + 1..]);
+                    result = format!(
+                        "{}{}{}",
+                        &result[..start],
+                        replacement,
+                        &result[start + end + 1..]
+                    );
                 } else {
                     break;
                 }
@@ -1429,7 +1449,10 @@ fn resolve_maven_dependencies(pom_path: &Path) -> std::result::Result<Vec<PathBu
 
     for mut dep in resolved.dependencies {
         if dep.version.is_empty() {
-            if let Some(v) = resolved.dependency_management.get(&(dep.group_id.clone(), dep.artifact_id.clone())) {
+            if let Some(v) = resolved
+                .dependency_management
+                .get(&(dep.group_id.clone(), dep.artifact_id.clone()))
+            {
                 dep.version = v.clone();
             }
         }

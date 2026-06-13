@@ -24,3 +24,16 @@ target
 .astro-probe.db
 .astro-probe.db-shm
 .astro-probe.db-wal
+
+# AI Agent & Workspace temporary files
+.agents/
+artifacts/
+ORIGINAL_REQUEST.md
+debug_info.txt
+diff_cg.txt
+test_output.log
+crates/astro-probe-tests/tests/scratch.rs
+
+
+# IDE Configuration Files
+.idea/

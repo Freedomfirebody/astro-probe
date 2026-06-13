@@ -43,12 +43,20 @@ impl<'a> ExtensionContext<'a> {
         }
     }
 
-    pub fn resolve_virtual_call(&self, alloc_type: &str, method_name: &str, params_sig: &str) -> Option<String> {
+    pub fn resolve_virtual_call(
+        &self,
+        alloc_type: &str,
+        method_name: &str,
+        params_sig: &str,
+    ) -> Option<String> {
         let mut best_target = None;
         let mut best_distance = usize::MAX;
 
         // 1. Try exact parameter signature match first
-        if let Some(list) = self.decl_by_name_params.get(&(method_name.to_string(), params_sig.to_string())) {
+        if let Some(list) = self
+            .decl_by_name_params
+            .get(&(method_name.to_string(), params_sig.to_string()))
+        {
             for (method_fqn, class_fqn) in list {
                 if self.is_subtype(alloc_type, class_fqn) {
                     if let Some(distances) = self.ancestors_map.get(alloc_type) {
@@ -74,7 +82,10 @@ impl<'a> ExtensionContext<'a> {
             if let Some(distances) = self.ancestors_map.get(alloc_type) {
                 for (ancestor, &d) in distances {
                     if d < best_distance {
-                        if let Some(methods) = self.decl_by_class_name.get(&(ancestor.clone(), method_name.to_string())) {
+                        if let Some(methods) = self
+                            .decl_by_class_name
+                            .get(&(ancestor.clone(), method_name.to_string()))
+                        {
                             for m_fqn in methods {
                                 if self.get_param_count(m_fqn) == call_param_count {
                                     best_distance = d;
@@ -158,15 +169,21 @@ impl PointsToSolver {
     }
 
     #[allow(non_snake_case, clippy::type_complexity)]
-    pub fn solve(&self, conn: &mut Connection, extensions: &[&dyn PointsToSolverExtension]) -> Result<(), CoreError> {
+    pub fn solve(
+        &self,
+        conn: &mut Connection,
+        extensions: &[&dyn PointsToSolverExtension],
+    ) -> Result<(), CoreError> {
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
         // Step 1: Initialize local points-to sets from direct allocation assignments
-        let has_existing_records: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM points_to_sets LIMIT 1)",
-            [],
-            |row| row.get(0),
-        ).unwrap_or(false);
+        let has_existing_records: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM points_to_sets LIMIT 1)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
 
         if !has_existing_records {
             tx.execute("DELETE FROM points_to_sets", [])?;
@@ -243,19 +260,21 @@ impl PointsToSolver {
              UNION \
              SELECT DISTINCT method_fqn FROM call_sites \
              UNION \
-             SELECT DISTINCT method_fqn FROM allocation_sites"
+             SELECT DISTINCT method_fqn FROM allocation_sites",
         )?;
         let mut method_rows = method_stmt.query([])?;
         while let Some(row) = method_rows.next()? {
             let m_fqn: String = row.get(0)?;
-            active_contexts.entry(m_fqn).or_default().insert("".to_string());
+            active_contexts
+                .entry(m_fqn)
+                .or_default()
+                .insert("".to_string());
         }
         drop(method_rows);
         drop(method_stmt);
 
         // Load class hierarchy for resolving virtual calls
-        let mut hier_stmt =
-            tx.prepare("SELECT class_fqn, parent_fqn FROM class_hierarchy")?;
+        let mut hier_stmt = tx.prepare("SELECT class_fqn, parent_fqn FROM class_hierarchy")?;
         let mut hier_rows = hier_stmt.query([])?;
         let mut parent_map: HashMap<String, Vec<String>> = HashMap::new();
         while let Some(row) = hier_rows.next()? {
@@ -416,7 +435,7 @@ impl PointsToSolver {
         let mut call_args: HashMap<String, Vec<(u32, String, String)>> = HashMap::new();
 
         let mut call_stmt = tx.prepare(
-            "SELECT call_id, method_fqn, receiver, method_name, lhs, static_callee FROM call_sites"
+            "SELECT call_id, method_fqn, receiver, method_name, lhs, static_callee FROM call_sites",
         )?;
         let mut call_rows = call_stmt.query([])?;
         while let Some(row) = call_rows.next()? {
@@ -460,8 +479,7 @@ impl PointsToSolver {
 
         // Populate allocation types
         let mut alloc_types = HashMap::new();
-        let mut alloc_stmt =
-            tx.prepare("SELECT alloc_id, class_fqn FROM allocation_sites")?;
+        let mut alloc_stmt = tx.prepare("SELECT alloc_id, class_fqn FROM allocation_sites")?;
         let mut alloc_rows = alloc_stmt.query([])?;
         while let Some(row) = alloc_rows.next()? {
             let alloc_id: String = row.get(0)?;
@@ -498,8 +516,7 @@ impl PointsToSolver {
         drop(supernode_stmt);
 
         let is_supernode = |target: &str| -> bool {
-            supernodes.contains(target)
-                || extensions.iter().any(|ext| ext.is_supernode(target))
+            supernodes.contains(target) || extensions.iter().any(|ext| ext.is_supernode(target))
         };
 
         let mut allocs_by_class: HashMap<String, Vec<String>> = HashMap::new();
@@ -512,8 +529,10 @@ impl PointsToSolver {
 
         // Andersen's Point-to solver propagation loop
         let mut changed = true;
-        let mut instance_fields: HashMap<((String, String), String), HashSet<(String, String)>> = HashMap::new();
-        let mut call_edges_discovered: HashSet<(String, String, String, String, bool)> = HashSet::new();
+        let mut instance_fields: HashMap<((String, String), String), HashSet<(String, String)>> =
+            HashMap::new();
+        let mut call_edges_discovered: HashSet<(String, String, String, String, bool)> =
+            HashSet::new();
 
         let mut vars_by_ctx: HashMap<String, HashSet<String>> = HashMap::new();
         let mut fields_by_aid: HashMap<String, HashSet<(String, String)>> = HashMap::new();
@@ -522,7 +541,7 @@ impl PointsToSolver {
         if has_existing_records {
             // Load existing points_to_sets
             let mut pts_stmt = tx.prepare(
-                "SELECT variable_fqn, alloc_id, context, alloc_context FROM points_to_sets"
+                "SELECT variable_fqn, alloc_id, context, alloc_context FROM points_to_sets",
             )?;
             let mut pts_rows = pts_stmt.query([])?;
             let mut loaded_records = Vec::new();
@@ -537,8 +556,14 @@ impl PointsToSolver {
                 pts.entry(key.clone()).or_default().insert(val.clone());
                 loaded_pts.insert((key, val));
 
-                vars_by_ctx.entry(context.clone()).or_default().insert(variable_fqn.clone());
-                alloc_to_ctxs.entry(alloc_id.clone()).or_default().insert(alloc_context.clone());
+                vars_by_ctx
+                    .entry(context.clone())
+                    .or_default()
+                    .insert(variable_fqn.clone());
+                alloc_to_ctxs
+                    .entry(alloc_id.clone())
+                    .or_default()
+                    .insert(alloc_context.clone());
 
                 if let Some(idx) = variable_fqn.find('#') {
                     let method_fqn = &variable_fqn[..idx];
@@ -566,8 +591,14 @@ impl PointsToSolver {
                             for base_alloc in base_pts {
                                 let alloc_key = (base_alloc.clone(), field.to_string());
                                 let val = (alloc_context.clone(), alloc_id.clone());
-                                instance_fields.entry(alloc_key.clone()).or_default().insert(val);
-                                fields_by_aid.entry((alloc_key.0).1.clone()).or_default().insert(((alloc_key.0).0.clone(), alloc_key.1));
+                                instance_fields
+                                    .entry(alloc_key.clone())
+                                    .or_default()
+                                    .insert(val);
+                                fields_by_aid
+                                    .entry((alloc_key.0).1.clone())
+                                    .or_default()
+                                    .insert(((alloc_key.0).0.clone(), alloc_key.1));
                             }
                         }
                     }
@@ -576,12 +607,15 @@ impl PointsToSolver {
 
             // Load existing call_edges
             let mut edge_stmt = tx.prepare(
-                "SELECT caller, callee, caller_context, callee_context, is_virtual FROM call_edges"
+                "SELECT caller, callee, caller_context, callee_context, is_virtual FROM call_edges",
             )?;
             let mut edge_rows = edge_stmt.query([])?;
             let mut stripped_to_full: HashMap<String, Vec<String>> = HashMap::new();
             for full in active_contexts.keys() {
-                stripped_to_full.entry(strip_signature(full).to_string()).or_default().push(full.clone());
+                stripped_to_full
+                    .entry(strip_signature(full).to_string())
+                    .or_default()
+                    .push(full.clone());
             }
 
             while let Some(row) = edge_rows.next()? {
@@ -648,7 +682,10 @@ impl PointsToSolver {
                 let v = $val;
                 let inserted = $instance_fields.entry(k.clone()).or_default().insert(v);
                 if inserted {
-                    $fields_by_aid.entry((k.0).1.clone()).or_default().insert(((k.0).0.clone(), k.1));
+                    $fields_by_aid
+                        .entry((k.0).1.clone())
+                        .or_default()
+                        .insert(((k.0).0.clone(), k.1));
                 }
                 inserted
             }};
@@ -698,7 +735,13 @@ impl PointsToSolver {
                             if needs_insert {
                                 let rhs_set_clone = rhs_set.clone();
                                 for val in rhs_set_clone {
-                                    if insert_pts!(pts, vars_by_ctx, alloc_to_ctxs, lhs_cs.clone(), val) {
+                                    if insert_pts!(
+                                        pts,
+                                        vars_by_ctx,
+                                        alloc_to_ctxs,
+                                        lhs_cs.clone(),
+                                        val
+                                    ) {
                                         set_changed!("copy");
                                     }
                                 }
@@ -726,7 +769,8 @@ impl PointsToSolver {
                                         for alloc in base_pts_clone {
                                             let alloc_key = (alloc.clone(), field.to_string());
                                             let mut needs_insert = false;
-                                            if let Some(field_set) = instance_fields.get(&alloc_key) {
+                                            if let Some(field_set) = instance_fields.get(&alloc_key)
+                                            {
                                                 for val in rhs_set {
                                                     if !field_set.contains(val) {
                                                         needs_insert = true;
@@ -739,7 +783,12 @@ impl PointsToSolver {
                                             if needs_insert {
                                                 let rhs_set_clone = rhs_set.clone();
                                                 for val in rhs_set_clone {
-                                                    if insert_field!(instance_fields, fields_by_aid, alloc_key.clone(), val) {
+                                                    if insert_field!(
+                                                        instance_fields,
+                                                        fields_by_aid,
+                                                        alloc_key.clone(),
+                                                        val
+                                                    ) {
                                                         set_changed!("field_write");
                                                     }
                                                 }
@@ -767,7 +816,9 @@ impl PointsToSolver {
                                 if let Some(base_pts) = pts.get(&base_cs) {
                                     let base_pts_clone = base_pts.clone();
                                     for alloc in base_pts_clone {
-                                        if let Some(field_set) = instance_fields.get(&(alloc, field.to_string())) {
+                                        if let Some(field_set) =
+                                            instance_fields.get(&(alloc, field.to_string()))
+                                        {
                                             let lhs_cs = (ctx.clone(), lhs.clone());
                                             let mut needs_insert = false;
                                             if let Some(lhs_set) = pts.get(&lhs_cs) {
@@ -783,7 +834,13 @@ impl PointsToSolver {
                                             if needs_insert {
                                                 let field_clone = field_set.clone();
                                                 for val in field_clone {
-                                                    if insert_pts!(pts, vars_by_ctx, alloc_to_ctxs, lhs_cs.clone(), val) {
+                                                    if insert_pts!(
+                                                        pts,
+                                                        vars_by_ctx,
+                                                        alloc_to_ctxs,
+                                                        lhs_cs.clone(),
+                                                        val
+                                                    ) {
                                                         set_changed!("field_read");
                                                     }
                                                 }
@@ -807,7 +864,8 @@ impl PointsToSolver {
                         if let Some(alloc_ids) = allocs_by_class.get(class_fqn) {
                             for alloc_id in alloc_ids {
                                 // Spring beans have allocation context ""
-                                let alloc_key = (("".to_string(), alloc_id.clone()), field_name.to_string());
+                                let alloc_key =
+                                    (("".to_string(), alloc_id.clone()), field_name.to_string());
                                 let mut needs_insert = false;
                                 if let Some(field_set) = instance_fields.get(&alloc_key) {
                                     for val in key_pts {
@@ -822,7 +880,12 @@ impl PointsToSolver {
                                 if needs_insert {
                                     let key_pts_clone = key_pts.clone();
                                     for val in key_pts_clone {
-                                        if insert_field!(instance_fields, fields_by_aid, alloc_key.clone(), val.clone()) {
+                                        if insert_field!(
+                                            instance_fields,
+                                            fields_by_aid,
+                                            alloc_key.clone(),
+                                            val.clone()
+                                        ) {
                                             set_changed!("spring_di");
                                         }
                                     }
@@ -844,17 +907,27 @@ impl PointsToSolver {
                         }
                     }
 
-                    let mut temp_instance_fields: HashMap<(String, String), HashSet<String>> = HashMap::new();
+                    let mut temp_instance_fields: HashMap<(String, String), HashSet<String>> =
+                        HashMap::new();
                     for (((_, aid), field), target_allocs) in &instance_fields {
-                        let entry = temp_instance_fields.entry((aid.clone(), field.clone())).or_default();
+                        let entry = temp_instance_fields
+                            .entry((aid.clone(), field.clone()))
+                            .or_default();
                         for (_, taid) in target_allocs {
                             entry.insert(taid.clone());
                         }
                     }
 
-                    let mut temp_call_edges_discovered: HashSet<(String, String, bool)> = HashSet::new();
-                    for (_caller_ctx, caller, _callee_ctx, callee, is_virt) in &call_edges_discovered {
-                        temp_call_edges_discovered.insert((caller.clone(), callee.clone(), *is_virt));
+                    let mut temp_call_edges_discovered: HashSet<(String, String, bool)> =
+                        HashSet::new();
+                    for (_caller_ctx, caller, _callee_ctx, callee, is_virt) in
+                        &call_edges_discovered
+                    {
+                        temp_call_edges_discovered.insert((
+                            caller.clone(),
+                            callee.clone(),
+                            *is_virt,
+                        ));
                     }
 
                     let mut ext_ctx = ExtensionContext {
@@ -891,7 +964,13 @@ impl PointsToSolver {
                                 };
                                 for alloc_ctx in alloc_ctxs {
                                     let alloc_cs = (alloc_ctx, alloc_id.clone());
-                                    if insert_pts!(pts, vars_by_ctx, alloc_to_ctxs, dest_cs.clone(), alloc_cs) {
+                                    if insert_pts!(
+                                        pts,
+                                        vars_by_ctx,
+                                        alloc_to_ctxs,
+                                        dest_cs.clone(),
+                                        alloc_cs
+                                    ) {
                                         changed = true;
                                     }
                                 }
@@ -907,7 +986,10 @@ impl PointsToSolver {
                                 is_virt,
                             )) {
                                 changed = true;
-                                active_contexts.entry(c_callee_str).or_default().insert("".to_string());
+                                active_contexts
+                                    .entry(c_callee_str)
+                                    .or_default()
+                                    .insert("".to_string());
                             }
                         }
                     }
@@ -976,7 +1058,9 @@ impl PointsToSolver {
                                         params_content.split(',').count()
                                     };
 
-                                    if let Some(declared_methods) = decl_by_class_name.get(&(class_fqn.to_string(), method_name.to_string())) {
+                                    if let Some(declared_methods) = decl_by_class_name
+                                        .get(&(class_fqn.to_string(), method_name.to_string()))
+                                    {
                                         for decl_fqn in declared_methods {
                                             if get_param_count(decl_fqn) == arg_count {
                                                 resolved = decl_fqn.clone();
@@ -1015,18 +1099,26 @@ impl PointsToSolver {
                                 "".to_string()
                             };
                             let mut aids = HashSet::new();
-                            let mut temp_instance_fields: HashMap<(String, String), HashSet<String>> = HashMap::new();
+                            let mut temp_instance_fields: HashMap<
+                                (String, String),
+                                HashSet<String>,
+                            > = HashMap::new();
 
                             if needs_pts {
                                 let belongs_to_call = |var: &str| -> bool {
                                     var.starts_with(caller_method_fqn)
-                                        || resolved_targets.iter().any(|(target, _)| var.starts_with(target))
+                                        || resolved_targets
+                                            .iter()
+                                            .any(|(target, _)| var.starts_with(target))
                                 };
 
                                 let mut process_var = |ctx: &str, var: &str| {
                                     if belongs_to_call(var) {
-                                        if let Some(allocs) = pts.get(&(ctx.to_string(), var.to_string())) {
-                                            let entry = temp_pts.entry(var.to_string()).or_default();
+                                        if let Some(allocs) =
+                                            pts.get(&(ctx.to_string(), var.to_string()))
+                                        {
+                                            let entry =
+                                                temp_pts.entry(var.to_string()).or_default();
                                             for (_, aid) in allocs {
                                                 entry.insert(aid.clone());
                                                 aids.insert(aid.clone());
@@ -1051,9 +1143,12 @@ impl PointsToSolver {
                                 for aid in &aids {
                                     if let Some(entries) = fields_by_aid.get(aid) {
                                         for (alloc_ctx, field) in entries {
-                                            let key = ((alloc_ctx.clone(), aid.clone()), field.clone());
+                                            let key =
+                                                ((alloc_ctx.clone(), aid.clone()), field.clone());
                                             if let Some(target_allocs) = instance_fields.get(&key) {
-                                                let entry = temp_instance_fields.entry((aid.clone(), field.clone())).or_default();
+                                                let entry = temp_instance_fields
+                                                    .entry((aid.clone(), field.clone()))
+                                                    .or_default();
                                                 for (_, taid) in target_allocs {
                                                     entry.insert(taid.clone());
                                                 }
@@ -1063,7 +1158,8 @@ impl PointsToSolver {
                                 }
                             }
 
-                            let mut temp_call_edges_discovered: HashSet<(String, String, bool)> = HashSet::new();
+                            let mut temp_call_edges_discovered: HashSet<(String, String, bool)> =
+                                HashSet::new();
 
                             let mut ext_ctx = ExtensionContext {
                                 conn: &tx,
@@ -1079,20 +1175,24 @@ impl PointsToSolver {
                                 call_args: &call_args,
                             };
 
-                            let ext_res = ext.handle_call(&mut ext_ctx, &call_info, &resolved_targets)?;
+                            let ext_res =
+                                ext.handle_call(&mut ext_ctx, &call_info, &resolved_targets)?;
 
                             if !temp_pts.is_empty() || !temp_call_edges_discovered.is_empty() {
                                 for (var, allocs) in temp_pts {
                                     let mut dest_ctx = C_caller.clone();
                                     for (target, _) in &resolved_targets {
-                                        if var.starts_with(&format!("{}#", target)) || var.starts_with(target) {
+                                        if var.starts_with(&format!("{}#", target))
+                                            || var.starts_with(target)
+                                        {
                                             dest_ctx = C_callee.clone();
                                             break;
                                         }
                                     }
                                     let dest_cs = (dest_ctx, var);
                                     for alloc_id in allocs {
-                                        let alloc_ctxs = if alloc_id.starts_with("SpringBeanAlloc:") {
+                                        let alloc_ctxs = if alloc_id.starts_with("SpringBeanAlloc:")
+                                        {
                                             let mut s = HashSet::new();
                                             s.insert("".to_string());
                                             s
@@ -1105,14 +1205,22 @@ impl PointsToSolver {
                                         };
                                         for alloc_ctx in alloc_ctxs {
                                             let alloc_cs = (alloc_ctx, alloc_id.clone());
-                                            if insert_pts!(pts, vars_by_ctx, alloc_to_ctxs, dest_cs.clone(), alloc_cs) {
+                                            if insert_pts!(
+                                                pts,
+                                                vars_by_ctx,
+                                                alloc_to_ctxs,
+                                                dest_cs.clone(),
+                                                alloc_cs
+                                            ) {
                                                 changed = true;
                                             }
                                         }
                                     }
                                 }
 
-                                for (c_caller_str, c_callee_str, is_virt) in temp_call_edges_discovered {
+                                for (c_caller_str, c_callee_str, is_virt) in
+                                    temp_call_edges_discovered
+                                {
                                     if call_edges_discovered.insert((
                                         C_caller.clone(),
                                         c_caller_str.clone(),
@@ -1121,7 +1229,10 @@ impl PointsToSolver {
                                         is_virt,
                                     )) {
                                         changed = true;
-                                        active_contexts.entry(c_callee_str).or_default().insert(C_callee.clone());
+                                        active_contexts
+                                            .entry(c_callee_str)
+                                            .or_default()
+                                            .insert(C_callee.clone());
                                     }
                                 }
                             }
@@ -1156,7 +1267,10 @@ impl PointsToSolver {
                                 is_virt,
                             )) {
                                 set_changed!("standard_call_edges");
-                                active_contexts.entry(target.clone()).or_default().insert(C_callee.clone());
+                                active_contexts
+                                    .entry(target.clone())
+                                    .or_default()
+                                    .insert(C_callee.clone());
                             }
 
                             if is_supernode(&target) {
@@ -1164,7 +1278,13 @@ impl PointsToSolver {
                                     let supernode_alloc = format!("SupernodeReturn:{}", target);
                                     let return_cs = (C_caller.clone(), return_var.clone());
                                     let supernode_cs = ("".to_string(), supernode_alloc);
-                                    if insert_pts!(pts, vars_by_ctx, alloc_to_ctxs, return_cs, supernode_cs) {
+                                    if insert_pts!(
+                                        pts,
+                                        vars_by_ctx,
+                                        alloc_to_ctxs,
+                                        return_cs,
+                                        supernode_cs
+                                    ) {
                                         set_changed!("supernode_return");
                                     }
                                 }
@@ -1181,9 +1301,16 @@ impl PointsToSolver {
                                                 let arg_cs = (C_caller.clone(), arg_var.clone());
                                                 if let Some(arg_pts) = pts.get(&arg_cs) {
                                                     let arg_pts_clone = arg_pts.clone();
-                                                    let return_cs = (C_caller.clone(), return_var.clone());
+                                                    let return_cs =
+                                                        (C_caller.clone(), return_var.clone());
                                                     for val in arg_pts_clone {
-                                                        if insert_pts!(pts, vars_by_ctx, alloc_to_ctxs, return_cs.clone(), val) {
+                                                        if insert_pts!(
+                                                            pts,
+                                                            vars_by_ctx,
+                                                            alloc_to_ctxs,
+                                                            return_cs.clone(),
+                                                            val
+                                                        ) {
                                                             set_changed!("summary_param");
                                                         }
                                                     }
@@ -1199,22 +1326,31 @@ impl PointsToSolver {
                             if let Some(ref rec_var) = receiver {
                                 let rec_cs = (C_caller.clone(), rec_var.clone());
                                 if let Some(rec_pts) = pts.get(&rec_cs) {
-                                    propagations.push(((C_callee.clone(), format!("{}#this", target)), rec_pts.clone()));
+                                    propagations.push((
+                                        (C_callee.clone(), format!("{}#this", target)),
+                                        rec_pts.clone(),
+                                    ));
                                 }
                             }
                             if let Some(args) = call_args.get(call_id) {
                                 for (idx, arg_var, _) in args {
                                     let arg_cs = (C_caller.clone(), arg_var.clone());
                                     if let Some(arg_pts) = pts.get(&arg_cs) {
-                                        propagations
-                                            .push(((C_callee.clone(), format!("{}#p{}", target, idx)), arg_pts.clone()));
+                                        propagations.push((
+                                            (C_callee.clone(), format!("{}#p{}", target, idx)),
+                                            arg_pts.clone(),
+                                        ));
                                     }
                                 }
                             }
                             if let Some(ref return_var) = lhs {
-                                let target_return_cs = (C_callee.clone(), format!("{}#return", target));
+                                let target_return_cs =
+                                    (C_callee.clone(), format!("{}#return", target));
                                 if let Some(ret_pts) = pts.get(&target_return_cs) {
-                                    propagations.push(((C_caller.clone(), return_var.clone()), ret_pts.clone()));
+                                    propagations.push((
+                                        (C_caller.clone(), return_var.clone()),
+                                        ret_pts.clone(),
+                                    ));
                                 }
                             }
 
@@ -1232,7 +1368,13 @@ impl PointsToSolver {
                                 }
                                 if needs_insert {
                                     for val in vals {
-                                        if insert_pts!(pts, vars_by_ctx, alloc_to_ctxs, to_cs.clone(), val) {
+                                        if insert_pts!(
+                                            pts,
+                                            vars_by_ctx,
+                                            alloc_to_ctxs,
+                                            to_cs.clone(),
+                                            val
+                                        ) {
                                             set_changed!("param_propagation");
                                         }
                                     }
@@ -1242,7 +1384,11 @@ impl PointsToSolver {
                     }
                 }
             }
-            println!("Solver iter {} finished, pts size = {}", iter_count, pts.len());
+            println!(
+                "Solver iter {} finished, pts size = {}",
+                iter_count,
+                pts.len()
+            );
         }
 
         // Persist points-to sets back to database
@@ -1269,12 +1415,19 @@ impl PointsToSolver {
                             let base_cs = (ctx.clone(), base_var.to_string());
                             if let Some(base_pts) = pts.get(&base_cs) {
                                 for alloc in base_pts {
-                                    if let Some(field_set) = instance_fields.get(&(alloc.clone(), field.to_string())) {
+                                    if let Some(field_set) =
+                                        instance_fields.get(&(alloc.clone(), field.to_string()))
+                                    {
                                         for val in field_set {
                                             let key = (ctx.clone(), lhs_field_expr.clone());
                                             let val_entry = (val.0.clone(), val.1.clone());
                                             if !loaded_pts.contains(&(key, val_entry)) {
-                                                pts_to_insert.push((lhs_field_expr, &val.1, ctx, &val.0));
+                                                pts_to_insert.push((
+                                                    lhs_field_expr,
+                                                    &val.1,
+                                                    ctx,
+                                                    &val.0,
+                                                ));
                                             }
                                         }
                                     }
@@ -1297,12 +1450,19 @@ impl PointsToSolver {
                             let base_cs = (ctx.clone(), base_var.to_string());
                             if let Some(base_pts) = pts.get(&base_cs) {
                                 for alloc in base_pts {
-                                    if let Some(field_set) = instance_fields.get(&(alloc.clone(), field.to_string())) {
+                                    if let Some(field_set) =
+                                        instance_fields.get(&(alloc.clone(), field.to_string()))
+                                    {
                                         for val in field_set {
                                             let key = (ctx.clone(), rhs_field_expr.clone());
                                             let val_entry = (val.0.clone(), val.1.clone());
                                             if !loaded_pts.contains(&(key, val_entry)) {
-                                                pts_to_insert.push((rhs_field_expr, &val.1, ctx, &val.0));
+                                                pts_to_insert.push((
+                                                    rhs_field_expr,
+                                                    &val.1,
+                                                    ctx,
+                                                    &val.0,
+                                                ));
                                             }
                                         }
                                     }
@@ -1328,7 +1488,13 @@ impl PointsToSolver {
             if i > 0 {
                 query_pts_full.push_str(", ");
             }
-            query_pts_full.push_str(&format!("(?{}, ?{}, ?{}, ?{})", i * 4 + 1, i * 4 + 2, i * 4 + 3, i * 4 + 4));
+            query_pts_full.push_str(&format!(
+                "(?{}, ?{}, ?{}, ?{})",
+                i * 4 + 1,
+                i * 4 + 2,
+                i * 4 + 3,
+                i * 4 + 4
+            ));
         }
         let mut stmt_pts_full = tx.prepare(&query_pts_full)?;
 
@@ -1351,7 +1517,13 @@ impl PointsToSolver {
                     if i > 0 {
                         query_pts_last.push_str(", ");
                     }
-                    query_pts_last.push_str(&format!("(?{}, ?{}, ?{}, ?{})", i * 4 + 1, i * 4 + 2, i * 4 + 3, i * 4 + 4));
+                    query_pts_last.push_str(&format!(
+                        "(?{}, ?{}, ?{}, ?{})",
+                        i * 4 + 1,
+                        i * 4 + 2,
+                        i * 4 + 3,
+                        i * 4 + 4
+                    ));
                 }
                 let mut stmt_pts_last = tx.prepare(&query_pts_last)?;
                 let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(chunk.len() * 4);
@@ -1372,7 +1544,13 @@ impl PointsToSolver {
         let mut edges_to_insert = Vec::new();
         for (caller_ctx, caller, callee_ctx, callee, is_virt) in call_edges_discovered {
             let is_virt_int = if is_virt { 1 } else { 0 };
-            let entry = (caller.clone(), callee.clone(), caller_ctx.clone(), callee_ctx.clone(), is_virt_int);
+            let entry = (
+                caller.clone(),
+                callee.clone(),
+                caller_ctx.clone(),
+                callee_ctx.clone(),
+                is_virt_int,
+            );
             if !loaded_edges.contains(&entry) {
                 edges_to_insert.push((caller, callee, caller_ctx, callee_ctx, is_virt_int));
             }
@@ -1459,7 +1637,6 @@ fn strip_signature(method_fqn: &str) -> &str {
         method_fqn
     }
 }
-
 
 #[cfg(test)]
 mod tests {

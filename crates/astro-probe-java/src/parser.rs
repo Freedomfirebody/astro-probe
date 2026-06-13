@@ -220,7 +220,11 @@ fn find_config_files(dir: &Path) -> Vec<std::path::PathBuf> {
             let path = entry.path();
             if path.is_dir() {
                 if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
-                    if name == "target" || name == "build" || name == ".git" || name == "node_modules" {
+                    if name == "target"
+                        || name == "build"
+                        || name == ".git"
+                        || name == "node_modules"
+                    {
                         continue;
                     }
                 }
@@ -316,7 +320,10 @@ fn parse_yaml_file(content: &str) -> HashMap<String, String> {
     props
 }
 
-fn resolve_and_store_properties(project_path: &Path, conn: &mut rusqlite::Connection) -> Result<()> {
+fn resolve_and_store_properties(
+    project_path: &Path,
+    conn: &mut rusqlite::Connection,
+) -> Result<()> {
     let files = find_config_files(project_path);
     let mut config_changed = false;
     let mut current_hashes = HashMap::new();
@@ -328,11 +335,13 @@ fn resolve_and_store_properties(project_path: &Path, conn: &mut rusqlite::Connec
     }
 
     let mut stored_hashes = HashMap::new();
-    let table_exists: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='file_hashes')",
-        [],
-        |row| row.get(0),
-    ).unwrap_or(false);
+    let table_exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='file_hashes')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(false);
 
     if table_exists {
         for path_str in current_hashes.keys() {
@@ -450,7 +459,8 @@ impl JavaParser {
         ).unwrap_or(false);
 
         if table_exists {
-            let mut stmt = conn.prepare("SELECT file_path, hash FROM file_hashes WHERE file_path LIKE '%.java'")?;
+            let mut stmt = conn
+                .prepare("SELECT file_path, hash FROM file_hashes WHERE file_path LIKE '%.java'")?;
             let mut rows = stmt.query([])?;
             while let Some(row) = rows.next()? {
                 let path: String = row.get(0)?;
@@ -685,7 +695,11 @@ impl JavaParser {
                 )?;
 
                 for parent in &class.parents {
-                    tracing::debug!("DEBUG INSERT HIERARCHY: class='{}', parent='{}'", fqn, parent);
+                    tracing::debug!(
+                        "DEBUG INSERT HIERARCHY: class='{}', parent='{}'",
+                        fqn,
+                        parent
+                    );
                     conn.execute(
                         "INSERT OR REPLACE INTO class_hierarchy (class_fqn, parent_fqn) VALUES (?1, ?2)",
                         [&fqn, parent],
@@ -708,7 +722,12 @@ impl JavaParser {
                         [&fqn, &field.name, &field_type_ann],
                     )?;
                     for ann in &field.annotations {
-                        tracing::debug!("DEBUG INSERT FIELD ANN: fqn='{}', fname='{}', ann='{}'", fqn, field.name, ann);
+                        tracing::debug!(
+                            "DEBUG INSERT FIELD ANN: fqn='{}', fname='{}', ann='{}'",
+                            fqn,
+                            field.name,
+                            ann
+                        );
                         conn.execute(
                             "INSERT OR REPLACE INTO field_annotations (class_fqn, field_name, annotation_name) VALUES (?1, ?2, ?3)",
                             [&fqn, &field.name, ann],
@@ -747,7 +766,11 @@ impl JavaParser {
                     )?;
 
                     for ann in &method.annotations {
-                        tracing::debug!("DEBUG INSERT METHOD ANN: method_fqn='{}', ann='{}'", method_fqn, ann);
+                        tracing::debug!(
+                            "DEBUG INSERT METHOD ANN: method_fqn='{}', ann='{}'",
+                            method_fqn,
+                            ann
+                        );
                         conn.execute(
                             "INSERT OR REPLACE INTO method_annotations (method_fqn, annotation_name) VALUES (?1, ?2)",
                             [&method_fqn, ann],
@@ -925,7 +948,11 @@ fn find_java_files(dir: &Path) -> Vec<std::path::PathBuf> {
             let path = entry.path();
             if path.is_dir() {
                 if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
-                    if name == "target" || name == "build" || name == ".git" || name == "node_modules" {
+                    if name == "target"
+                        || name == "build"
+                        || name == ".git"
+                        || name == "node_modules"
+                    {
                         continue;
                     }
                 }
@@ -1098,9 +1125,28 @@ fn resolve_parent_fqn(parent: &str, pkg: &str, imports: &[String]) -> String {
             }
         }
         let std_classes = [
-            "String", "Object", "Class", "System", "Integer", "Long", "Double", "Float", "Boolean", "Byte", "Short",
-            "Character", "CharSequence", "Runnable", "Thread", "Throwable", "Exception", "RuntimeException", "Error",
-            "Void", "Cloneable", "Comparable"
+            "String",
+            "Object",
+            "Class",
+            "System",
+            "Integer",
+            "Long",
+            "Double",
+            "Float",
+            "Boolean",
+            "Byte",
+            "Short",
+            "Character",
+            "CharSequence",
+            "Runnable",
+            "Thread",
+            "Throwable",
+            "Exception",
+            "RuntimeException",
+            "Error",
+            "Void",
+            "Cloneable",
+            "Comparable",
         ];
         if std_classes.contains(&clean) {
             return format!("java.lang.{}", clean);
@@ -1111,7 +1157,13 @@ fn resolve_parent_fqn(parent: &str, pkg: &str, imports: &[String]) -> String {
             format!("{}.{}", pkg, clean)
         }
     })();
-    tracing::debug!("DEBUG RESOLVE PARENT: parent='{}', pkg='{}', clean='{}', resolved='{}'", parent, pkg, clean, res);
+    tracing::debug!(
+        "DEBUG RESOLVE PARENT: parent='{}', pkg='{}', clean='{}', resolved='{}'",
+        parent,
+        pkg,
+        clean,
+        res
+    );
     res
 }
 
@@ -1158,16 +1210,9 @@ fn parse_method_decl(
             }
             // FieldType annotation for DI resolution
             let clean_type = strip_generics(&p_type);
-            let resolved_pt = resolve_type_fqn_simple(
-                &clean_type,
-                package_name,
-                imports,
-                class_fqn,
-            );
-            param_annotations.push((
-                p_name.clone(),
-                format!("FieldType:{}", resolved_pt),
-            ));
+            let resolved_pt =
+                resolve_type_fqn_simple(&clean_type, package_name, imports, class_fqn);
+            param_annotations.push((p_name.clone(), format!("FieldType:{}", resolved_pt)));
         }
     }
 
@@ -1327,9 +1372,28 @@ fn resolve_type_fqn_simple(
         }
     }
     let std_classes = [
-        "String", "Object", "Class", "System", "Integer", "Long", "Double", "Float", "Boolean", "Byte", "Short",
-        "Character", "CharSequence", "Runnable", "Thread", "Throwable", "Exception", "RuntimeException", "Error",
-        "Void", "Cloneable", "Comparable"
+        "String",
+        "Object",
+        "Class",
+        "System",
+        "Integer",
+        "Long",
+        "Double",
+        "Float",
+        "Boolean",
+        "Byte",
+        "Short",
+        "Character",
+        "CharSequence",
+        "Runnable",
+        "Thread",
+        "Throwable",
+        "Exception",
+        "RuntimeException",
+        "Error",
+        "Void",
+        "Cloneable",
+        "Comparable",
     ];
     if std_classes.contains(&type_name) {
         return format!("java.lang.{}", type_name);
@@ -1358,7 +1422,12 @@ fn strip_annotations_from_decl(decl: &str) -> String {
     while i < chars.len() {
         if chars[i] == '@' {
             i += 1;
-            while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_' || chars[i] == '$' || chars[i] == '.') {
+            while i < chars.len()
+                && (chars[i].is_alphanumeric()
+                    || chars[i] == '_'
+                    || chars[i] == '$'
+                    || chars[i] == '.')
+            {
                 i += 1;
             }
             let mut temp = i;
@@ -1877,9 +1946,28 @@ fn resolve_type_fqn(
         return fqn.clone();
     }
     let std_classes = [
-        "String", "Object", "Class", "System", "Integer", "Long", "Double", "Float", "Boolean", "Byte", "Short",
-        "Character", "CharSequence", "Runnable", "Thread", "Throwable", "Exception", "RuntimeException", "Error",
-        "Void", "Cloneable", "Comparable"
+        "String",
+        "Object",
+        "Class",
+        "System",
+        "Integer",
+        "Long",
+        "Double",
+        "Float",
+        "Boolean",
+        "Byte",
+        "Short",
+        "Character",
+        "CharSequence",
+        "Runnable",
+        "Thread",
+        "Throwable",
+        "Exception",
+        "RuntimeException",
+        "Error",
+        "Void",
+        "Cloneable",
+        "Comparable",
     ];
     if std_classes.contains(&clean_type_name) {
         return format!("java.lang.{}", clean_type_name);
@@ -2138,7 +2226,13 @@ fn process_rhs_expression(
                     for arg in &args {
                         let arg = arg.trim();
                         if !arg.is_empty() {
-                            let ty = resolve_expression_type(arg, class, workspace_classes, local_vars, fields_map);
+                            let ty = resolve_expression_type(
+                                arg,
+                                class,
+                                workspace_classes,
+                                local_vars,
+                                fields_map,
+                            );
                             arg_types.push(ty);
                             let arg_simple = resolve_to_simple_var(
                                 arg,
@@ -2154,7 +2248,8 @@ fn process_rhs_expression(
                         }
                     }
 
-                    let static_callee = format!("{}.<init>({})", resolved_type, arg_types.join(","));
+                    let static_callee =
+                        format!("{}.<init>({})", resolved_type, arg_types.join(","));
                     let constructor_call_id = format!("{}:call_{}", caller_fqn, alloc_counter);
                     *alloc_counter += 1;
 
@@ -2327,9 +2422,14 @@ fn process_rhs_expression(
                     )?;
                 }
             }
-            "get" | "remove" | "pop" | "poll" | "pollFirst" | "pollLast" | "peek" | "peekFirst" | "peekLast" | "first" | "last" | "element" => {
+            "get" | "remove" | "pop" | "poll" | "pollFirst" | "pollLast" | "peek" | "peekFirst"
+            | "peekLast" | "first" | "last" | "element" => {
                 let is_map = receiver_type.contains("Map") || receiver_type.contains("map");
-                let field_name = if is_map && method_name == "get" { "[value]" } else { "[element]" };
+                let field_name = if is_map && method_name == "get" {
+                    "[value]"
+                } else {
+                    "[element]"
+                };
                 let rhs_field = format!("{}.{}", rec_var, field_name);
                 conn.execute(
                     "INSERT INTO source_assignments (lhs, rhs, assignment_type, method_fqn) VALUES (?1, ?2, 'FIELD_READ', ?3)",
@@ -3636,7 +3736,10 @@ public class MyService {
 
         assert_eq!(fields.len(), 4);
         assert_eq!(fields[0].name, "port");
-        assert_eq!(fields[0].annotations, vec!["Value", "Value:${server.port:8080}"]);
+        assert_eq!(
+            fields[0].annotations,
+            vec!["Value", "Value:${server.port:8080}"]
+        );
         assert_eq!(methods.len(), 1);
         assert_eq!(methods[0].method_name, "<init>");
     }

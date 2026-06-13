@@ -6,7 +6,10 @@ use astro_probe_server::kernel::WorkspaceManager;
 static TEST_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
 
 fn lock_test_env() -> std::sync::MutexGuard<'static, ()> {
-    TEST_MUTEX.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|e| e.into_inner())
+    TEST_MUTEX
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
 }
 
 struct EnvGuard {
@@ -86,7 +89,7 @@ async fn save_dbs_for_inspection() {
     let _env = EnvGuard::new("milestone4_save");
 
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    
+
     // 1. Analyze and save complex-spring
     let complex_path = manifest_dir
         .parent()
@@ -105,7 +108,10 @@ async fn save_dbs_for_inspection() {
     {
         let manager = WorkspaceManager::new();
         let _ws = manager
-            .create_workspace("complex-spring-verify".to_string(), complex_guard.temp_dir.to_string_lossy().to_string())
+            .create_workspace(
+                "complex-spring-verify".to_string(),
+                complex_guard.temp_dir.to_string_lossy().to_string(),
+            )
             .expect("Failed to create complex-spring workspace");
     }
 
@@ -113,11 +119,16 @@ async fn save_dbs_for_inspection() {
     checkpoint_db(&db_path);
 
     // Copy to our agent directory
-    let dest_complex = Path::new("c:\\Development\\Project\\Rust\\astro-probe\\.agents\\challenger_m4_2\\complex-spring.db");
+    let project_root = manifest_dir.parent().unwrap().parent().unwrap();
+    let dest_complex = project_root
+        .join(".agents")
+        .join("challenger_m4_2")
+        .join("complex-spring.db");
+    std::fs::create_dir_all(dest_complex.parent().unwrap()).ok();
     if dest_complex.exists() {
-        std::fs::remove_file(dest_complex).ok();
+        std::fs::remove_file(&dest_complex).ok();
     }
-    std::fs::copy(&db_path, dest_complex).unwrap();
+    std::fs::copy(&db_path, &dest_complex).unwrap();
 
     // 2. Analyze and save medium-spring
     let medium_path = manifest_dir
@@ -137,7 +148,10 @@ async fn save_dbs_for_inspection() {
     {
         let manager2 = WorkspaceManager::new();
         let _ws2 = manager2
-            .create_workspace("medium-spring-verify".to_string(), medium_guard.temp_dir.to_string_lossy().to_string())
+            .create_workspace(
+                "medium-spring-verify".to_string(),
+                medium_guard.temp_dir.to_string_lossy().to_string(),
+            )
             .expect("Failed to create medium-spring workspace");
     }
 
@@ -145,9 +159,13 @@ async fn save_dbs_for_inspection() {
     checkpoint_db(&db_path2);
 
     // Copy to our agent directory
-    let dest_medium = Path::new("c:\\Development\\Project\\Rust\\astro-probe\\.agents\\challenger_m4_2\\medium-spring.db");
+    let dest_medium = project_root
+        .join(".agents")
+        .join("challenger_m4_2")
+        .join("medium-spring.db");
+    std::fs::create_dir_all(dest_medium.parent().unwrap()).ok();
     if dest_medium.exists() {
-        std::fs::remove_file(dest_medium).ok();
+        std::fs::remove_file(&dest_medium).ok();
     }
-    std::fs::copy(&db_path2, dest_medium).unwrap();
+    std::fs::copy(&db_path2, &dest_medium).unwrap();
 }

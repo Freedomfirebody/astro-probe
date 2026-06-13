@@ -313,46 +313,17 @@ impl McpServer {
                     .get()
                     .map_err(|e| format!("Failed to get DB connection: {}", e))?;
 
-                let sql = if direction == "incoming" {
-                    "SELECT caller, callee, is_virtual FROM call_edges WHERE callee = ?1"
-                } else {
-                    "SELECT caller, callee, is_virtual FROM call_edges WHERE caller = ?1"
-                };
-
-                let mut stmt = conn
-                    .prepare(sql)
-                    .map_err(|e| format!("Failed to prepare SQL: {}", e))?;
-
-                let edges_iter = stmt
-                    .query_map([method], |row| {
-                        let caller: String = row.get(0)?;
-                        let callee: String = row.get(1)?;
-                        let is_virtual_int: i32 = row.get(2)?;
-                        Ok(json!({
-                            "caller": caller,
-                            "callee": callee,
-                            "is_virtual": is_virtual_int != 0
-                        }))
-                    })
-                    .map_err(|e| format!("Failed to execute SQL: {}", e))?;
-
-                let mut edges = Vec::new();
-                for edge in edges_iter.flatten() {
-                    edges.push(edge);
+                match astro_probe_core::query::query_call_graph_internal(&conn, method, direction) {
+                    Ok(resp) => Ok(json!({
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": serde_json::to_string(&resp).unwrap()
+                            }
+                        ]
+                    })),
+                    Err(e) => Err(format!("Call Graph query failed: {}", e)),
                 }
-
-                let response = json!({
-                    "edges": edges
-                });
-
-                Ok(json!({
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": response.to_string()
-                        }
-                    ]
-                }))
             }
             "query_lineage" => {
                 let workspace_id = args
@@ -406,7 +377,9 @@ impl McpServer {
                     .get()
                     .map_err(|e| format!("Failed to get DB connection: {}", e))?;
 
-                let mut sql = "SELECT http_method, path, controller_method_fqn FROM web_routes WHERE 1=1".to_string();
+                let mut sql =
+                    "SELECT http_method, path, controller_method_fqn FROM web_routes WHERE 1=1"
+                        .to_string();
                 let mut query_args: Vec<String> = Vec::new();
 
                 if let Some(path) = path_filter {
@@ -422,7 +395,10 @@ impl McpServer {
                     .prepare(&sql)
                     .map_err(|e| format!("Failed to prepare SQL: {}", e))?;
 
-                let params_ref: Vec<&dyn rusqlite::ToSql> = query_args.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+                let params_ref: Vec<&dyn rusqlite::ToSql> = query_args
+                    .iter()
+                    .map(|s| s as &dyn rusqlite::ToSql)
+                    .collect();
 
                 let routes_iter = stmt
                     .query_map(&*params_ref, |row| {

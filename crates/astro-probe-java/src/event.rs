@@ -1,9 +1,7 @@
+use astro_probe_core::cg::{CallSiteInfo, CoreError, ExtensionContext, PointsToSolverExtension};
+use rusqlite::Connection;
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
-use rusqlite::Connection;
-use astro_probe_core::cg::{
-    PointsToSolverExtension, ExtensionContext, CallSiteInfo, CoreError
-};
 
 fn strip_signature(method_fqn: &str) -> &str {
     if let Some(idx) = method_fqn.find('(') {
@@ -64,14 +62,19 @@ fn get_declared_type(context: &ExtensionContext, var_name: &str) -> Option<Strin
 fn get_runnable_implementations(context: &ExtensionContext, base_type: &str) -> Vec<String> {
     let mut impls = Vec::new();
 
-    if context.decl_by_class_name.contains_key(&(base_type.to_string(), "run".to_string())) {
+    if context
+        .decl_by_class_name
+        .contains_key(&(base_type.to_string(), "run".to_string()))
+    {
         impls.push(base_type.to_string());
     }
 
     for (class_fqn, _) in context.ancestors_map.iter() {
         if class_fqn != base_type
             && context.is_subtype(class_fqn, base_type)
-            && context.decl_by_class_name.contains_key(&(class_fqn.clone(), "run".to_string()))
+            && context
+                .decl_by_class_name
+                .contains_key(&(class_fqn.clone(), "run".to_string()))
         {
             impls.push(class_fqn.clone());
         }
@@ -101,7 +104,7 @@ impl SpringEventLineageExtension {
 
         let mut stmt = conn.prepare(
             "SELECT DISTINCT method_fqn FROM method_annotations \
-             WHERE annotation_name = 'EventListener' OR annotation_name LIKE 'EventListener:%'"
+             WHERE annotation_name = 'EventListener' OR annotation_name LIKE 'EventListener:%'",
         )?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
@@ -115,7 +118,7 @@ impl SpringEventLineageExtension {
 
         let mut stmt2 = conn.prepare(
             "SELECT DISTINCT class_fqn FROM class_hierarchy \
-             WHERE parent_fqn LIKE '%ApplicationListener%'"
+             WHERE parent_fqn LIKE '%ApplicationListener%'",
         )?;
         let mut m_stmt = conn.prepare(
             "SELECT method_fqn FROM method_declarations WHERE class_fqn = ?1 AND method_name = 'onApplicationEvent'"
@@ -147,7 +150,10 @@ impl Default for SpringEventLineageExtension {
 
 impl PointsToSolverExtension for SpringEventLineageExtension {
     fn matches_call_site(&self, call: &CallSiteInfo) -> bool {
-        call.method_name == "publishEvent" || call.static_callee.is_some_and(|sc| sc.contains("publishEvent"))
+        call.method_name == "publishEvent"
+            || call
+                .static_callee
+                .is_some_and(|sc| sc.contains("publishEvent"))
     }
 
     fn handle_call(
@@ -157,7 +163,9 @@ impl PointsToSolverExtension for SpringEventLineageExtension {
         _resolved_targets: &HashSet<(String, bool)>,
     ) -> Result<Option<bool>, CoreError> {
         let is_publish = call.method_name == "publishEvent"
-            || call.static_callee.is_some_and(|sc| sc.contains("publishEvent"));
+            || call
+                .static_callee
+                .is_some_and(|sc| sc.contains("publishEvent"));
 
         if !is_publish {
             return Ok(None);
@@ -169,7 +177,9 @@ impl PointsToSolverExtension for SpringEventLineageExtension {
             if let Some((_, arg_var, _)) = args.iter().find(|(idx, _, _)| *idx == 0) {
                 if let Some(arg_pts) = context.pts.get(arg_var) {
                     let arg_pts_clone = arg_pts.clone();
-                    let listeners = self.get_listeners(context.conn).map_err(CoreError::Sqlite)?;
+                    let listeners = self
+                        .get_listeners(context.conn)
+                        .map_err(CoreError::Sqlite)?;
 
                     for event_alloc in &arg_pts_clone {
                         if let Some(event_type) = context.alloc_types.get(event_alloc) {
@@ -233,8 +243,13 @@ impl PointsToSolverExtension for AsyncExecutionExtension {
                     let rec_pts_clone = rec_pts.clone();
                     for alloc in rec_pts_clone {
                         if let Some(alloc_type) = context.alloc_types.get(&alloc) {
-                            if alloc_type == "java.lang.Thread" || context.is_subtype(alloc_type, "java.lang.Thread") {
-                                if let Some(methods) = context.decl_by_class_name.get(&(alloc_type.clone(), "run".to_string())) {
+                            if alloc_type == "java.lang.Thread"
+                                || context.is_subtype(alloc_type, "java.lang.Thread")
+                            {
+                                if let Some(methods) = context
+                                    .decl_by_class_name
+                                    .get(&(alloc_type.clone(), "run".to_string()))
+                                {
                                     for run_method in methods {
                                         if context.call_edges_discovered.insert((
                                             strip_signature(call.caller_method_fqn).to_string(),
@@ -280,8 +295,15 @@ impl PointsToSolverExtension for AsyncExecutionExtension {
                                         // 1. Try points-to sets first
                                         if let Some(runnable_pts) = context.pts.get(&arg_var) {
                                             for r_alloc in runnable_pts {
-                                                if let Some(r_type) = context.alloc_types.get(r_alloc) {
-                                                    if r_type == "java.lang.Runnable" || context.is_subtype(r_type, "java.lang.Runnable") {
+                                                if let Some(r_type) =
+                                                    context.alloc_types.get(r_alloc)
+                                                {
+                                                    if r_type == "java.lang.Runnable"
+                                                        || context.is_subtype(
+                                                            r_type,
+                                                            "java.lang.Runnable",
+                                                        )
+                                                    {
                                                         runnable_types.insert(r_type.clone());
                                                     }
                                                 }
@@ -290,9 +312,19 @@ impl PointsToSolverExtension for AsyncExecutionExtension {
 
                                         // 2. Fall back to declared type
                                         if runnable_types.is_empty() {
-                                            if let Some(declared_type) = get_declared_type(context, &arg_var) {
-                                                if declared_type == "java.lang.Runnable" || context.is_subtype(&declared_type, "java.lang.Runnable") {
-                                                    let impls = get_runnable_implementations(context, &declared_type);
+                                            if let Some(declared_type) =
+                                                get_declared_type(context, &arg_var)
+                                            {
+                                                if declared_type == "java.lang.Runnable"
+                                                    || context.is_subtype(
+                                                        &declared_type,
+                                                        "java.lang.Runnable",
+                                                    )
+                                                {
+                                                    let impls = get_runnable_implementations(
+                                                        context,
+                                                        &declared_type,
+                                                    );
                                                     for impl_class in impls {
                                                         runnable_types.insert(impl_class);
                                                     }
@@ -300,10 +332,14 @@ impl PointsToSolverExtension for AsyncExecutionExtension {
                                             }
                                         }
                                         for r_type in runnable_types {
-                                            if let Some(run_methods) = context.decl_by_class_name.get(&(r_type.clone(), "run".to_string())) {
+                                            if let Some(run_methods) = context
+                                                .decl_by_class_name
+                                                .get(&(r_type.clone(), "run".to_string()))
+                                            {
                                                 for run_method in run_methods {
                                                     if context.call_edges_discovered.insert((
-                                                        strip_signature(call.caller_method_fqn).to_string(),
+                                                        strip_signature(call.caller_method_fqn)
+                                                            .to_string(),
                                                         strip_signature(run_method).to_string(),
                                                         true,
                                                     )) {
@@ -311,13 +347,25 @@ impl PointsToSolverExtension for AsyncExecutionExtension {
                                                     }
 
                                                     // Propagate this pointer if we have concrete allocations
-                                                    if let Some(runnable_pts) = context.pts.get(&arg_var).cloned() {
+                                                    if let Some(runnable_pts) =
+                                                        context.pts.get(&arg_var).cloned()
+                                                    {
                                                         for r_alloc in runnable_pts {
-                                                            if let Some(act) = context.alloc_types.get(&r_alloc) {
+                                                            if let Some(act) =
+                                                                context.alloc_types.get(&r_alloc)
+                                                            {
                                                                 if act == &r_type {
-                                                                    let this_var = format!("{}#this", run_method);
-                                                                    let this_set = context.pts.entry(this_var).or_default();
-                                                                    if this_set.insert(r_alloc.clone()) {
+                                                                    let this_var = format!(
+                                                                        "{}#this",
+                                                                        run_method
+                                                                    );
+                                                                    let this_set = context
+                                                                        .pts
+                                                                        .entry(this_var)
+                                                                        .or_default();
+                                                                    if this_set
+                                                                        .insert(r_alloc.clone())
+                                                                    {
                                                                         changed = true;
                                                                     }
                                                                 }
@@ -345,7 +393,9 @@ impl PointsToSolverExtension for AsyncExecutionExtension {
                     if let Some(arg_pts) = context.pts.get(arg_var) {
                         for alloc in arg_pts {
                             if let Some(alloc_type) = context.alloc_types.get(alloc) {
-                                if alloc_type == "java.lang.Runnable" || context.is_subtype(alloc_type, "java.lang.Runnable") {
+                                if alloc_type == "java.lang.Runnable"
+                                    || context.is_subtype(alloc_type, "java.lang.Runnable")
+                                {
                                     target_types.insert(alloc_type.clone());
                                 }
                             }
@@ -355,8 +405,12 @@ impl PointsToSolverExtension for AsyncExecutionExtension {
                     // 2. If no target types found via points-to set, fall back to declared type
                     if target_types.is_empty() {
                         if let Some(declared_type) = get_declared_type(context, arg_var) {
-                            if declared_type == "java.lang.Runnable" || context.is_subtype(&declared_type, "java.lang.Runnable") {
-                                for impl_class in get_runnable_implementations(context, &declared_type) {
+                            if declared_type == "java.lang.Runnable"
+                                || context.is_subtype(&declared_type, "java.lang.Runnable")
+                            {
+                                for impl_class in
+                                    get_runnable_implementations(context, &declared_type)
+                                {
                                     target_types.insert(impl_class);
                                 }
                             }
@@ -364,7 +418,10 @@ impl PointsToSolverExtension for AsyncExecutionExtension {
                     }
 
                     for alloc_type in target_types {
-                        if let Some(methods) = context.decl_by_class_name.get(&(alloc_type.clone(), "run".to_string())) {
+                        if let Some(methods) = context
+                            .decl_by_class_name
+                            .get(&(alloc_type.clone(), "run".to_string()))
+                        {
                             for run_method in methods {
                                 if context.call_edges_discovered.insert((
                                     strip_signature(call.caller_method_fqn).to_string(),
@@ -380,7 +437,8 @@ impl PointsToSolverExtension for AsyncExecutionExtension {
                                         if let Some(act) = context.alloc_types.get(&alloc) {
                                             if act == &alloc_type {
                                                 let this_var = format!("{}#this", run_method);
-                                                let this_set = context.pts.entry(this_var).or_default();
+                                                let this_set =
+                                                    context.pts.entry(this_var).or_default();
                                                 if this_set.insert(alloc.clone()) {
                                                     changed = true;
                                                 }
@@ -440,7 +498,9 @@ fn matches_within(method_fqn: &str, pattern: &str) -> bool {
 fn matches_pointcut(method_fqn: &str, expr: &str) -> bool {
     let expr = expr.trim();
     if expr.contains("||") {
-        return expr.split("||").any(|part| matches_pointcut(method_fqn, part));
+        return expr
+            .split("||")
+            .any(|part| matches_pointcut(method_fqn, part));
     }
     if expr.starts_with("within(") && expr.ends_with(')') {
         let pattern = &expr[7..expr.len() - 1];
@@ -493,11 +553,11 @@ impl SpringAopPointcutExtension {
                 OR annotation_name LIKE 'After:%' \
                 OR annotation_name LIKE 'Around:%' \
                 OR annotation_name LIKE 'AfterThrowing:%' \
-                OR annotation_name LIKE 'AfterReturning:%'"
+                OR annotation_name LIKE 'AfterReturning:%'",
         )?;
         let mut pc_stmt = conn.prepare(
             "SELECT annotation_name FROM method_annotations \
-             WHERE method_fqn LIKE ?1 AND annotation_name LIKE 'Pointcut:%'"
+             WHERE method_fqn LIKE ?1 AND annotation_name LIKE 'Pointcut:%'",
         )?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
@@ -565,7 +625,9 @@ impl PointsToSolverExtension for SpringAopPointcutExtension {
                 if matches_pointcut(target_fqn, &advice.pointcut_expr) {
                     let caller = strip_signature(call.caller_method_fqn).to_string();
                     let advice_callee = strip_signature(&advice.advice_method_fqn).to_string();
-                    context.call_edges_discovered.insert((caller, advice_callee, true));
+                    context
+                        .call_edges_discovered
+                        .insert((caller, advice_callee, true));
                 }
             }
         }

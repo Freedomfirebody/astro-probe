@@ -7,7 +7,10 @@ use std::sync::{Mutex, OnceLock};
 static TEST_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
 
 fn lock_test_env() -> std::sync::MutexGuard<'static, ()> {
-    TEST_MUTEX.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|e| e.into_inner())
+    TEST_MUTEX
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
 }
 
 struct EnvGuard {
@@ -564,41 +567,76 @@ public class MyRunnable implements Runnable {
     // 6. Run workspace manager to parse and analyze
     let manager = WorkspaceManager::new();
     let ws = manager
-        .create_workspace("m3-test".to_string(), test_proj_dir.to_string_lossy().to_string())
+        .create_workspace(
+            "m3-test".to_string(),
+            test_proj_dir.to_string_lossy().to_string(),
+        )
         .expect("Failed to create workspace");
 
     let pool = manager.get_db_pool_and_touch(&ws.id).unwrap();
     let conn = pool.get().unwrap();
 
     // -- Assert Properties Resolution --
-    let count: i64 = conn.query_row("SELECT count(*) FROM resolved_properties", [], |r| r.get(0)).unwrap();
+    let count: i64 = conn
+        .query_row("SELECT count(*) FROM resolved_properties", [], |r| r.get(0))
+        .unwrap();
     assert!(count >= 3);
 
-    let dev_name: String = conn.query_row(
-        "SELECT value FROM resolved_properties WHERE key = 'app.name'", [], |r| r.get(0)
-    ).unwrap();
+    let dev_name: String = conn
+        .query_row(
+            "SELECT value FROM resolved_properties WHERE key = 'app.name'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(dev_name, "my-cool-app");
 
-    let port_val: String = conn.query_row(
-        "SELECT value FROM resolved_properties WHERE key = 'server.port'", [], |r| r.get(0)
-    ).unwrap();
+    let port_val: String = conn
+        .query_row(
+            "SELECT value FROM resolved_properties WHERE key = 'server.port'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(port_val, "9090");
 
     {
         let mut st_h = conn.prepare("SELECT * FROM class_hierarchy").unwrap();
-        let rows_h = st_h.query_map([], |r| Ok((r.get::<_, String>(0).unwrap(), r.get::<_, String>(1).unwrap()))).unwrap();
+        let rows_h = st_h
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0).unwrap(),
+                    r.get::<_, String>(1).unwrap(),
+                ))
+            })
+            .unwrap();
         for r in rows_h.flatten() {
             println!("CLASS HIERARCHY: {:?}", r);
         }
 
         let mut st = conn.prepare("SELECT * FROM class_annotations").unwrap();
-        let rows = st.query_map([], |r| Ok((r.get::<_, String>(0).unwrap(), r.get::<_, String>(1).unwrap()))).unwrap();
+        let rows = st
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0).unwrap(),
+                    r.get::<_, String>(1).unwrap(),
+                ))
+            })
+            .unwrap();
         for r in rows.flatten() {
             println!("CLASS ANN: {:?}", r);
         }
 
         let mut st2 = conn.prepare("SELECT * FROM field_annotations").unwrap();
-        let rows2 = st2.query_map([], |r| Ok((r.get::<_, String>(0).unwrap(), r.get::<_, String>(1).unwrap(), r.get::<_, String>(2).unwrap()))).unwrap();
+        let rows2 = st2
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0).unwrap(),
+                    r.get::<_, String>(1).unwrap(),
+                    r.get::<_, String>(2).unwrap(),
+                ))
+            })
+            .unwrap();
         for r in rows2.flatten() {
             println!("FIELD ANN: {:?}", r);
         }
@@ -635,19 +673,32 @@ public class MyRunnable implements Runnable {
     assert_eq!(desc_param_exists, 1);
 
     // -- Assert Spring MVC Route Mapping --
-    let get_path: String = conn.query_row(
-        "SELECT path FROM web_routes WHERE http_method = 'GET'", [], |r| r.get(0)
-    ).unwrap();
+    let get_path: String = conn
+        .query_row(
+            "SELECT path FROM web_routes WHERE http_method = 'GET'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(get_path, "/api/v1/users");
 
-    let post_paths_count: i64 = conn.query_row(
-        "SELECT count(*) FROM web_routes WHERE http_method = 'POST'", [], |r| r.get(0)
-    ).unwrap();
+    let post_paths_count: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM web_routes WHERE http_method = 'POST'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(post_paths_count, 2);
 
     let paths: Vec<String> = {
-        let mut stmt = conn.prepare("SELECT path FROM web_routes WHERE http_method = 'POST' ORDER BY path").unwrap();
-        stmt.query_map([], |r| r.get(0)).unwrap().flatten().collect()
+        let mut stmt = conn
+            .prepare("SELECT path FROM web_routes WHERE http_method = 'POST' ORDER BY path")
+            .unwrap();
+        stmt.query_map([], |r| r.get(0))
+            .unwrap()
+            .flatten()
+            .collect()
     };
     assert_eq!(paths, vec!["/api/v1/users/add", "/api/v1/users/create"]);
 
@@ -749,7 +800,10 @@ public class MyController {
     // 4. Run workspace manager to parse and analyze
     let manager = WorkspaceManager::new();
     let ws = manager
-        .create_workspace("aop-test".to_string(), test_proj_dir.to_string_lossy().to_string())
+        .create_workspace(
+            "aop-test".to_string(),
+            test_proj_dir.to_string_lossy().to_string(),
+        )
         .expect("Failed to create workspace");
 
     let pool = manager.get_db_pool_and_touch(&ws.id).unwrap();
@@ -757,8 +811,17 @@ public class MyController {
 
     // Print all discovered method annotations for debugging
     {
-        let mut stmt = conn.prepare("SELECT method_fqn, annotation_name FROM method_annotations").unwrap();
-        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0).unwrap(), r.get::<_, String>(1).unwrap()))).unwrap();
+        let mut stmt = conn
+            .prepare("SELECT method_fqn, annotation_name FROM method_annotations")
+            .unwrap();
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0).unwrap(),
+                    r.get::<_, String>(1).unwrap(),
+                ))
+            })
+            .unwrap();
         for r in rows.flatten() {
             println!("METHOD ANN: {:?}", r);
         }
@@ -793,10 +856,16 @@ async fn test_maven_dependency_resolution() {
     std::fs::create_dir_all(&test_dir).unwrap();
 
     // Setup dummy .m2 repo
-    let m2_dir = test_dir.join(".m2").join("repository").join("org").join("example").join("dummy").join("1.0");
+    let m2_dir = test_dir
+        .join(".m2")
+        .join("repository")
+        .join("org")
+        .join("example")
+        .join("dummy")
+        .join("1.0");
     std::fs::create_dir_all(&m2_dir).unwrap();
     let dummy_jar_path = m2_dir.join("dummy-1.0.jar");
-    
+
     // Create valid zip for dummy.jar
     {
         let file = std::fs::File::create(&dummy_jar_path).unwrap();
@@ -834,8 +903,11 @@ async fn test_maven_dependency_resolution() {
 
     // Run workspace manager
     let manager = WorkspaceManager::new();
-    let ws = manager.create_workspace("maven-workspace".to_string(), test_dir.to_string_lossy().to_string());
-    
+    let ws = manager.create_workspace(
+        "maven-workspace".to_string(),
+        test_dir.to_string_lossy().to_string(),
+    );
+
     // Restore env
     if let Some(ref val) = original_userprofile {
         std::env::set_var("USERPROFILE", val);
@@ -858,8 +930,14 @@ async fn test_1cfa_strategy_pattern() {
     let _lock = lock_test_env();
     let _env = EnvGuard::new("strategy_test");
 
-    let test_proj_dir = std::env::temp_dir().join(format!("strategy_proj_{}", uuid::Uuid::new_v4()));
-    let src_dir = test_proj_dir.join("src").join("main").join("java").join("com").join("strategy");
+    let test_proj_dir =
+        std::env::temp_dir().join(format!("strategy_proj_{}", uuid::Uuid::new_v4()));
+    let src_dir = test_proj_dir
+        .join("src")
+        .join("main")
+        .join("java")
+        .join("com")
+        .join("strategy");
     std::fs::create_dir_all(&src_dir).unwrap();
 
     let strategy_code = r#"
@@ -917,40 +995,51 @@ public class Client {
 
     let manager = WorkspaceManager::new();
     let ws = manager
-        .create_workspace("strategy-test".to_string(), test_proj_dir.to_string_lossy().to_string())
+        .create_workspace(
+            "strategy-test".to_string(),
+            test_proj_dir.to_string_lossy().to_string(),
+        )
         .expect("Failed to create workspace");
 
     let pool = manager.get_db_pool_and_touch(&ws.id).unwrap();
     let conn = pool.get().unwrap();
 
-
-
     {
-        let mut stmt = conn.prepare("SELECT caller, callee, caller_context, callee_context, is_virtual FROM call_edges").unwrap();
-        let rows = stmt.query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0).unwrap(),
-                r.get::<_, String>(1).unwrap(),
-                r.get::<_, String>(2).unwrap(),
-                r.get::<_, String>(3).unwrap(),
-                r.get::<_, i32>(4).unwrap(),
-            ))
-        }).unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT caller, callee, caller_context, callee_context, is_virtual FROM call_edges",
+            )
+            .unwrap();
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0).unwrap(),
+                    r.get::<_, String>(1).unwrap(),
+                    r.get::<_, String>(2).unwrap(),
+                    r.get::<_, String>(3).unwrap(),
+                    r.get::<_, i32>(4).unwrap(),
+                ))
+            })
+            .unwrap();
         println!("--- ALL CALL EDGES ---");
         for r in rows.flatten() {
             println!("EDGE: {:?}", r);
         }
     }
     {
-        let mut stmt = conn.prepare("SELECT variable_fqn, alloc_id, context, alloc_context FROM points_to_sets").unwrap();
-        let rows = stmt.query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0).unwrap(),
-                r.get::<_, String>(1).unwrap(),
-                r.get::<_, String>(2).unwrap(),
-                r.get::<_, String>(3).unwrap(),
-            ))
-        }).unwrap();
+        let mut stmt = conn
+            .prepare("SELECT variable_fqn, alloc_id, context, alloc_context FROM points_to_sets")
+            .unwrap();
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0).unwrap(),
+                    r.get::<_, String>(1).unwrap(),
+                    r.get::<_, String>(2).unwrap(),
+                    r.get::<_, String>(3).unwrap(),
+                ))
+            })
+            .unwrap();
         println!("--- ALL POINTS-TO SETS ---");
         for r in rows.flatten() {
             println!("PTS: {:?}", r);
@@ -962,14 +1051,16 @@ public class Client {
             "SELECT caller_context, caller, callee_context, callee FROM call_edges \
              WHERE caller = 'com.strategy.Context.run' AND callee LIKE 'com.strategy.Concrete%.execute'"
         ).unwrap();
-        let rows = stmt.query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0).unwrap(),
-                r.get::<_, String>(1).unwrap(),
-                r.get::<_, String>(2).unwrap(),
-                r.get::<_, String>(3).unwrap(),
-            ))
-        }).unwrap();
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0).unwrap(),
+                    r.get::<_, String>(1).unwrap(),
+                    r.get::<_, String>(2).unwrap(),
+                    r.get::<_, String>(3).unwrap(),
+                ))
+            })
+            .unwrap();
 
         let mut edges = Vec::new();
         for r in rows.flatten() {
@@ -984,7 +1075,11 @@ public class Client {
     // Second edge: Context.run -> ConcreteB.execute or ConcreteA.execute
     // But they must have different caller contexts!
     let ctxs: std::collections::HashSet<String> = edges.iter().map(|e| e.0.clone()).collect();
-    assert_eq!(ctxs.len(), 2, "Should have 2 distinct caller contexts for the calls to Strategy.execute");
+    assert_eq!(
+        ctxs.len(),
+        2,
+        "Should have 2 distinct caller contexts for the calls to Strategy.execute"
+    );
 
     drop(conn);
     drop(pool);
@@ -998,7 +1093,12 @@ async fn test_collection_propagation_list() {
     let _env = EnvGuard::new("list_test");
 
     let test_proj_dir = std::env::temp_dir().join(format!("list_proj_{}", uuid::Uuid::new_v4()));
-    let src_dir = test_proj_dir.join("src").join("main").join("java").join("com").join("coll");
+    let src_dir = test_proj_dir
+        .join("src")
+        .join("main")
+        .join("java")
+        .join("com")
+        .join("coll");
     std::fs::create_dir_all(&src_dir).unwrap();
 
     let item_code = r#"
@@ -1024,7 +1124,10 @@ public class ListTest {
 
     let manager = WorkspaceManager::new();
     let ws = manager
-        .create_workspace("list-test".to_string(), test_proj_dir.to_string_lossy().to_string())
+        .create_workspace(
+            "list-test".to_string(),
+            test_proj_dir.to_string_lossy().to_string(),
+        )
         .expect("Failed to create workspace");
 
     let pool = manager.get_db_pool_and_touch(&ws.id).unwrap();
@@ -1032,16 +1135,21 @@ public class ListTest {
 
     // Verify points-to set of res contains ItemA allocation
 
-
-    let res_points_to_item_a: i64 = conn.query_row(
-        "SELECT count(*) FROM points_to_sets p \
+    let res_points_to_item_a: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM points_to_sets p \
          JOIN allocation_sites a ON p.alloc_id = a.alloc_id \
          WHERE p.variable_fqn = 'com.coll.ListTest.run()#res' \
            AND a.class_fqn = 'com.coll.ItemA'",
-        [], |r| r.get(0)
-    ).unwrap();
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
 
-    assert!(res_points_to_item_a >= 1, "Variable res should point to ItemA allocation via list.[element]");
+    assert!(
+        res_points_to_item_a >= 1,
+        "Variable res should point to ItemA allocation via list.[element]"
+    );
 
     drop(conn);
     drop(pool);
@@ -1055,7 +1163,12 @@ async fn test_collection_propagation_map() {
     let _env = EnvGuard::new("map_test");
 
     let test_proj_dir = std::env::temp_dir().join(format!("map_proj_{}", uuid::Uuid::new_v4()));
-    let src_dir = test_proj_dir.join("src").join("main").join("java").join("com").join("coll");
+    let src_dir = test_proj_dir
+        .join("src")
+        .join("main")
+        .join("java")
+        .join("com")
+        .join("coll");
     std::fs::create_dir_all(&src_dir).unwrap();
 
     let key_code = r#"
@@ -1088,22 +1201,31 @@ public class MapTest {
 
     let manager = WorkspaceManager::new();
     let ws = manager
-        .create_workspace("map-test".to_string(), test_proj_dir.to_string_lossy().to_string())
+        .create_workspace(
+            "map-test".to_string(),
+            test_proj_dir.to_string_lossy().to_string(),
+        )
         .expect("Failed to create workspace");
 
     let pool = manager.get_db_pool_and_touch(&ws.id).unwrap();
     let conn = pool.get().unwrap();
 
     // Verify points-to set of res contains Value allocation
-    let res_points_to_value: i64 = conn.query_row(
-        "SELECT count(*) FROM points_to_sets p \
+    let res_points_to_value: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM points_to_sets p \
          JOIN allocation_sites a ON p.alloc_id = a.alloc_id \
          WHERE p.variable_fqn = 'com.coll.MapTest.run()#res' \
            AND a.class_fqn = 'com.coll.Value'",
-        [], |r| r.get(0)
-    ).unwrap();
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
 
-    assert!(res_points_to_value >= 1, "Variable res should point to Value allocation via map.[value]");
+    assert!(
+        res_points_to_value >= 1,
+        "Variable res should point to Value allocation via map.[value]"
+    );
 
     drop(conn);
     drop(pool);
@@ -1116,8 +1238,14 @@ async fn test_callback_pattern_flow() {
     let _lock = lock_test_env();
     let _env = EnvGuard::new("callback_test");
 
-    let test_proj_dir = std::env::temp_dir().join(format!("callback_proj_{}", uuid::Uuid::new_v4()));
-    let src_dir = test_proj_dir.join("src").join("main").join("java").join("com").join("callback");
+    let test_proj_dir =
+        std::env::temp_dir().join(format!("callback_proj_{}", uuid::Uuid::new_v4()));
+    let src_dir = test_proj_dir
+        .join("src")
+        .join("main")
+        .join("java")
+        .join("com")
+        .join("callback");
     std::fs::create_dir_all(&src_dir).unwrap();
 
     let callback_code = r#"
@@ -1170,7 +1298,10 @@ public class Client {
 
     let manager = WorkspaceManager::new();
     let ws = manager
-        .create_workspace("callback-test".to_string(), test_proj_dir.to_string_lossy().to_string())
+        .create_workspace(
+            "callback-test".to_string(),
+            test_proj_dir.to_string_lossy().to_string(),
+        )
         .expect("Failed to create workspace");
 
     let pool = manager.get_db_pool_and_touch(&ws.id).unwrap();
@@ -1179,15 +1310,21 @@ public class Client {
     // Verify points-to propagation in MyCallback.call
     // MyCallback.received field should point to Data allocation
 
-    let field_points_to_data: i64 = conn.query_row(
-        "SELECT count(*) FROM points_to_sets p \
+    let field_points_to_data: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM points_to_sets p \
          JOIN allocation_sites a ON p.alloc_id = a.alloc_id \
          WHERE p.variable_fqn LIKE '%MyCallback%#this.received' \
            AND a.class_fqn = 'com.callback.Data'",
-        [], |r| r.get(0)
-    ).unwrap();
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
 
-    assert!(field_points_to_data >= 1, "MyCallback.received should point to Data allocation via callback flow");
+    assert!(
+        field_points_to_data >= 1,
+        "MyCallback.received should point to Data allocation via callback flow"
+    );
 
     drop(conn);
     drop(pool);

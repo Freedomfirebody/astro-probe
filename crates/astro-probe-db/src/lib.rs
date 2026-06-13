@@ -110,11 +110,11 @@ pub fn init_db(conn: &rusqlite::Connection) -> Result<()> {
 
     let mut needs_recreation = true;
     if has_schema_version_table {
-        let db_version: i64 = conn.query_row(
-            "SELECT version FROM schema_version LIMIT 1",
-            [],
-            |row| row.get(0),
-        ).unwrap_or(0);
+        let db_version: i64 = conn
+            .query_row("SELECT version FROM schema_version LIMIT 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap_or(0);
         if db_version == 4 {
             needs_recreation = false;
         }

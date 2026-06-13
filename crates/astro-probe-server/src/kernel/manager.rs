@@ -158,7 +158,9 @@ impl WorkspaceManager {
             println!("DependencyInjectionAnalyzer took {:?}", t2.elapsed());
 
             let tr = std::time::Instant::now();
-            if let Err(e) = astro_probe_java::router::SpringMvcRouteAnalyzer::new().analyze(&mut conn) {
+            if let Err(e) =
+                astro_probe_java::router::SpringMvcRouteAnalyzer::new().analyze(&mut conn)
+            {
                 tracing::error!("Failed to run route mapping analysis: {}", e);
                 return Err(anyhow::anyhow!(
                     "Failed to run route mapping analysis: {}",
@@ -171,8 +173,11 @@ impl WorkspaceManager {
             let ext_event = astro_probe_java::event::SpringEventLineageExtension::new();
             let ext_async = astro_probe_java::event::AsyncExecutionExtension::new();
             let ext_aop = astro_probe_java::event::SpringAopPointcutExtension::new();
-            let extensions: Vec<&dyn astro_probe_core::cg::PointsToSolverExtension> = vec![&ext_event, &ext_async, &ext_aop];
-            if let Err(e) = astro_probe_core::cg::PointsToSolver::new().solve(&mut conn, &extensions) {
+            let extensions: Vec<&dyn astro_probe_core::cg::PointsToSolverExtension> =
+                vec![&ext_event, &ext_async, &ext_aop];
+            if let Err(e) =
+                astro_probe_core::cg::PointsToSolver::new().solve(&mut conn, &extensions)
+            {
                 tracing::error!("Failed to run call graph analysis: {}", e);
                 return Err(anyhow::anyhow!("Failed to run call graph analysis: {}", e));
             }

@@ -120,7 +120,7 @@ fn combine_paths(c: &str, m: &str) -> String {
     }
 
     let mut full_path = format!("{}{}", c_clean, m_clean);
-    
+
     while full_path.contains("//") {
         full_path = full_path.replace("//", "/");
     }
@@ -149,7 +149,7 @@ impl FrameworkAnalyzer<Connection> for SpringMvcRouteAnalyzer {
                 "SELECT DISTINCT class_fqn FROM class_annotations \
                  WHERE annotation_name IN ('Controller', 'RestController') \
                     OR annotation_name LIKE 'Controller:%' \
-                    OR annotation_name LIKE 'RestController:%'"
+                    OR annotation_name LIKE 'RestController:%'",
             )?;
             let mut controllers = Vec::new();
             let mut rows = stmt.query([])?;
@@ -169,7 +169,8 @@ impl FrameworkAnalyzer<Connection> for SpringMvcRouteAnalyzer {
                     class_anns.push(row.get::<_, String>(0)?);
                 }
 
-                let has_args_class_ann = class_anns.iter().any(|a| a.starts_with("RequestMapping:"));
+                let has_args_class_ann =
+                    class_anns.iter().any(|a| a.starts_with("RequestMapping:"));
                 let mut class_paths = Vec::new();
                 for ann in &class_anns {
                     if ann == "RequestMapping" {
@@ -196,7 +197,7 @@ impl FrameworkAnalyzer<Connection> for SpringMvcRouteAnalyzer {
                         annotation_name = 'PatchMapping' OR annotation_name LIKE 'PatchMapping:%' \
                      )"
                 )?;
-                
+
                 let method_prefix = format!("{}.", class_fqn);
                 let mut m_rows = method_ann_stmt.query([format!("{}%", method_prefix)])?;
                 let mut method_to_anns: HashMap<String, Vec<String>> = HashMap::new();
@@ -224,7 +225,10 @@ impl FrameworkAnalyzer<Connection> for SpringMvcRouteAnalyzer {
 
                         for ann in &base_anns {
                             let (base, args) = if let Some(colon_idx) = ann.find(':') {
-                                (ann[..colon_idx].to_string(), ann[colon_idx + 1..].to_string())
+                                (
+                                    ann[..colon_idx].to_string(),
+                                    ann[colon_idx + 1..].to_string(),
+                                )
                             } else {
                                 (ann.clone(), "".to_string())
                             };
