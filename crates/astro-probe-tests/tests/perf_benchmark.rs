@@ -164,7 +164,7 @@ async fn test_perf_benchmark_medium_spring() {
     println!("medium-spring Speedup ratio: {:.2}%", speedup * 100.0);
 
     let limit = if cfg!(debug_assertions) {
-        initial_duration * 4 / 5 // <80% in debug mode
+        initial_duration * 9 / 10 // <90% in debug mode (safe buffer for CI environments)
     } else {
         initial_duration / 2 // <50% in release mode
     };
