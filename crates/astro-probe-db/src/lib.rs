@@ -108,15 +108,42 @@ pub fn init_db(conn: &rusqlite::Connection) -> Result<()> {
         |row| row.get(0),
     ).unwrap_or(false);
 
+    let mut needs_recreation = true;
     if has_schema_version_table {
         let db_version: i64 = conn.query_row(
             "SELECT version FROM schema_version LIMIT 1",
             [],
             |row| row.get(0),
         ).unwrap_or(0);
-        if db_version == 3 {
-            return Ok(());
+        if db_version == 4 {
+            needs_recreation = false;
         }
+    }
+
+    if needs_recreation {
+        let _ = conn.execute("DROP TABLE IF EXISTS call_edges;", []);
+        let _ = conn.execute("DROP TABLE IF EXISTS lineage_edges;", []);
+        let _ = conn.execute("DROP TABLE IF EXISTS classes;", []);
+        let _ = conn.execute("DROP TABLE IF EXISTS class_hierarchy;", []);
+        let _ = conn.execute("DROP TABLE IF EXISTS method_declarations;", []);
+        let _ = conn.execute("DROP TABLE IF EXISTS allocation_sites;", []);
+        let _ = conn.execute("DROP TABLE IF EXISTS source_assignments;", []);
+        let _ = conn.execute("DROP TABLE IF EXISTS call_sites;", []);
+        let _ = conn.execute("DROP TABLE IF EXISTS call_arguments;", []);
+        let _ = conn.execute("DROP TABLE IF EXISTS points_to_sets;", []);
+        let _ = conn.execute("DROP TABLE IF EXISTS library_classes;", []);
+        let _ = conn.execute("DROP TABLE IF EXISTS class_annotations;", []);
+        let _ = conn.execute("DROP TABLE IF EXISTS field_annotations;", []);
+        let _ = conn.execute("DROP TABLE IF EXISTS method_annotations;", []);
+        let _ = conn.execute("DROP TABLE IF EXISTS parameter_annotations;", []);
+        let _ = conn.execute("DROP TABLE IF EXISTS file_hashes;", []);
+        let _ = conn.execute("DROP TABLE IF EXISTS file_facts_metadata;", []);
+        let _ = conn.execute("DROP TABLE IF EXISTS method_summaries;", []);
+        let _ = conn.execute("DROP TABLE IF EXISTS resolved_properties;", []);
+        let _ = conn.execute("DROP TABLE IF EXISTS web_routes;", []);
+        let _ = conn.execute("DROP TABLE IF EXISTS schema_version;", []);
+    } else {
+        return Ok(());
     }
 
     conn.execute("BEGIN IMMEDIATE TRANSACTION;", [])?;
@@ -127,8 +154,10 @@ pub fn init_db(conn: &rusqlite::Connection) -> Result<()> {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 caller TEXT NOT NULL,
                 callee TEXT NOT NULL,
+                caller_context TEXT NOT NULL DEFAULT '',
+                callee_context TEXT NOT NULL DEFAULT '',
                 is_virtual INTEGER NOT NULL DEFAULT 0,
-                UNIQUE(caller, callee)
+                UNIQUE(caller_context, caller, callee_context, callee)
             );",
             [],
         )?;
@@ -229,7 +258,9 @@ pub fn init_db(conn: &rusqlite::Connection) -> Result<()> {
             "CREATE TABLE IF NOT EXISTS points_to_sets (
                 variable_fqn TEXT NOT NULL,
                 alloc_id TEXT NOT NULL,
-                PRIMARY KEY (variable_fqn, alloc_id)
+                context TEXT NOT NULL DEFAULT '',
+                alloc_context TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (context, variable_fqn, alloc_context, alloc_id)
             );",
             [],
         )?;
@@ -337,7 +368,7 @@ pub fn init_db(conn: &rusqlite::Connection) -> Result<()> {
         )?;
 
         conn.execute(
-            "INSERT OR REPLACE INTO schema_version (version) VALUES (3);",
+            "INSERT OR REPLACE INTO schema_version (version) VALUES (4);",
             [],
         )?;
 

@@ -29,15 +29,21 @@ impl DependencyAnalyzer<Connection> for JarAnalyzer {
         local_conn: &mut Connection,
         workspace_id: &str,
     ) -> std::result::Result<(), Self::Error> {
-        let jar_files = if path.is_file() {
+        let mut jar_files = Vec::new();
+        if path.is_file() {
             if path.extension().and_then(|s| s.to_str()) == Some("jar") {
-                vec![path.to_path_buf()]
-            } else {
-                vec![]
+                jar_files.push(path.to_path_buf());
             }
         } else {
-            find_jar_files(path)
-        };
+            let pom_path = path.join("pom.xml");
+            if pom_path.exists() {
+                if let Ok(resolved_jars) = resolve_maven_dependencies(&pom_path) {
+                    jar_files.extend(resolved_jars);
+                }
+            } else {
+                jar_files.extend(find_jar_files(path));
+            }
+        }
 
         if jar_files.is_empty() {
             return Ok(());
@@ -1129,6 +1135,327 @@ pub fn copy_jar_facts_to_local(conn: &mut Connection, jar_hash: &str) -> Result<
     let detach_res = conn.execute("DETACH DATABASE global_db", []);
 
     copy_res.and(detach_res.map(|_| ()).map_err(|e| e.into()))
+}
+
+#[derive(Debug, Clone)]
+enum XmlToken {
+    Start(String),
+    End(String),
+    Text(String),
+}
+
+fn tokenize_xml(content: &str) -> Vec<XmlToken> {
+    let mut tokens = Vec::new();
+    let mut current = content;
+
+    while !current.is_empty() {
+        if let Some(start_idx) = current.find('<') {
+            let text = current[..start_idx].trim();
+            if !text.is_empty() {
+                tokens.push(XmlToken::Text(text.to_string()));
+            }
+
+            let rest = &current[start_idx + 1..];
+            if let Some(end_idx) = rest.find('>') {
+                let tag_content = rest[..end_idx].trim();
+                current = &rest[end_idx + 1..];
+
+                if tag_content.starts_with("!--") {
+                    continue;
+                } else if tag_content.starts_with('?') {
+                    continue;
+                } else if tag_content.starts_with('/') {
+                    tokens.push(XmlToken::End(tag_content[1..].trim().to_string()));
+                } else if tag_content.ends_with('/') {
+                    let name = tag_content[..tag_content.len() - 1].trim();
+                    let name = name.split_whitespace().next().unwrap_or("");
+                    tokens.push(XmlToken::Start(name.to_string()));
+                    tokens.push(XmlToken::End(name.to_string()));
+                } else {
+                    let name = tag_content.split_whitespace().next().unwrap_or("");
+                    tokens.push(XmlToken::Start(name.to_string()));
+                }
+            } else {
+                break;
+            }
+        } else {
+            let text = current.trim();
+            if !text.is_empty() {
+                tokens.push(XmlToken::Text(text.to_string()));
+            }
+            break;
+        }
+    }
+    tokens
+}
+
+#[derive(Debug, Clone, Default)]
+struct DependencyInfo {
+    group_id: String,
+    artifact_id: String,
+    version: String,
+    scope: String,
+}
+
+#[derive(Debug, Clone, Default)]
+struct RawPomInfo {
+    group_id: String,
+    artifact_id: String,
+    version: String,
+    parent_group_id: String,
+    parent_artifact_id: String,
+    parent_version: String,
+    parent_relative_path: Option<String>,
+    properties: HashMap<String, String>,
+    dependencies: Vec<DependencyInfo>,
+    dependency_management: Vec<DependencyInfo>,
+}
+
+fn parse_pom_file(path: &Path) -> std::result::Result<RawPomInfo, JavaError> {
+    let content = std::fs::read_to_string(path)?;
+    let tokens = tokenize_xml(&content);
+
+    let mut info = RawPomInfo::default();
+    let mut path_stack = Vec::new();
+    let mut current_dep = DependencyInfo::default();
+    let mut in_dependency_management = false;
+
+    for token in tokens {
+        match token {
+            XmlToken::Start(name) => {
+                path_stack.push(name.clone());
+                if name == "dependencyManagement" {
+                    in_dependency_management = true;
+                } else if name == "dependency" {
+                    current_dep = DependencyInfo::default();
+                }
+            }
+            XmlToken::End(name) => {
+                if name == "dependencyManagement" {
+                    in_dependency_management = false;
+                } else if name == "dependency" {
+                    if in_dependency_management {
+                        info.dependency_management.push(current_dep.clone());
+                    } else {
+                        info.dependencies.push(current_dep.clone());
+                    }
+                }
+                path_stack.pop();
+            }
+            XmlToken::Text(val) => {
+                if path_stack.is_empty() {
+                    continue;
+                }
+
+                if path_stack.starts_with(&["project".to_string(), "parent".to_string()]) && path_stack.len() == 3 {
+                    match path_stack[2].as_str() {
+                        "groupId" => info.parent_group_id = val,
+                        "artifactId" => info.parent_artifact_id = val,
+                        "version" => info.parent_version = val,
+                        "relativePath" => info.parent_relative_path = Some(val),
+                        _ => {}
+                    }
+                } else if path_stack.len() == 2 && path_stack[0] == "project" {
+                    match path_stack[1].as_str() {
+                        "groupId" => info.group_id = val,
+                        "artifactId" => info.artifact_id = val,
+                        "version" => info.version = val,
+                        _ => {}
+                    }
+                } else if path_stack.starts_with(&["project".to_string(), "properties".to_string()]) && path_stack.len() == 3 {
+                    info.properties.insert(path_stack[2].clone(), val);
+                } else if path_stack.contains(&"dependency".to_string()) {
+                    if let Some(pos) = path_stack.iter().position(|r| r == "dependency") {
+                        if path_stack.len() > pos + 1 {
+                            match path_stack[pos + 1].as_str() {
+                                "groupId" => current_dep.group_id = val,
+                                "artifactId" => current_dep.artifact_id = val,
+                                "version" => current_dep.version = val,
+                                "scope" => current_dep.scope = val,
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(info)
+}
+
+struct ResolvedPom {
+    dependencies: Vec<DependencyInfo>,
+    dependency_management: HashMap<(String, String), String>,
+    properties: HashMap<String, String>,
+}
+
+fn resolve_pom_recursive(pom_path: &Path, m2_repo: &Path) -> std::result::Result<ResolvedPom, JavaError> {
+    fn resolve_pom_inner(pom_path: &Path, m2_repo: &Path, depth: usize) -> std::result::Result<ResolvedPom, JavaError> {
+        if depth > 10 {
+            return Err(JavaError::Other("Cyclic pom.xml parent hierarchy detected".to_string()));
+        }
+        let raw = parse_pom_file(pom_path)?;
+        let mut properties = HashMap::new();
+        let mut dependency_management = HashMap::new();
+
+        if !raw.parent_group_id.is_empty() && !raw.parent_artifact_id.is_empty() && !raw.parent_version.is_empty() {
+            let mut parent_pom_path = None;
+
+            if let Some(ref rel) = raw.parent_relative_path {
+                if !rel.trim().is_empty() {
+                    let parent = pom_path.parent().unwrap_or_else(|| Path::new("."));
+                    let candidate = parent.join(rel);
+                    let candidate = if candidate.is_dir() {
+                        candidate.join("pom.xml")
+                    } else {
+                        candidate
+                    };
+                    if candidate.exists() {
+                        parent_pom_path = Some(candidate);
+                    }
+                }
+            } else {
+                let parent = pom_path.parent().unwrap_or_else(|| Path::new("."));
+                let candidate = parent.join("..").join("pom.xml");
+                if candidate.exists() {
+                    parent_pom_path = Some(candidate);
+                }
+            }
+
+            if parent_pom_path.is_none() {
+                let m2_parent = m2_repo
+                    .join(raw.parent_group_id.replace('.', "/"))
+                    .join(&raw.parent_artifact_id)
+                    .join(&raw.parent_version)
+                    .join(format!("{}-{}.pom", raw.parent_artifact_id, raw.parent_version));
+                if m2_parent.exists() {
+                    parent_pom_path = Some(m2_parent);
+                }
+            }
+
+            if let Some(parent_path) = parent_pom_path {
+                if let Ok(parent_resolved) = resolve_pom_inner(&parent_path, m2_repo, depth + 1) {
+                    properties.extend(parent_resolved.properties);
+                    dependency_management.extend(parent_resolved.dependency_management);
+                }
+            }
+        }
+
+        properties.extend(raw.properties.clone());
+
+        for dep in raw.dependency_management {
+            if !dep.group_id.is_empty() && !dep.artifact_id.is_empty() && !dep.version.is_empty() {
+                dependency_management.insert((dep.group_id, dep.artifact_id), dep.version);
+            }
+        }
+
+        let project_group_id = if raw.group_id.is_empty() { raw.parent_group_id.clone() } else { raw.group_id.clone() };
+        let project_version = if raw.version.is_empty() { raw.parent_version.clone() } else { raw.version.clone() };
+        properties.insert("project.groupId".to_string(), project_group_id.clone());
+        properties.insert("pom.groupId".to_string(), project_group_id.clone());
+        properties.insert("project.artifactId".to_string(), raw.artifact_id.clone());
+        properties.insert("pom.artifactId".to_string(), raw.artifact_id.clone());
+        properties.insert("project.version".to_string(), project_version.clone());
+        properties.insert("pom.version".to_string(), project_version.clone());
+
+        if !raw.parent_group_id.is_empty() {
+            properties.insert("project.parent.groupId".to_string(), raw.parent_group_id.clone());
+            properties.insert("project.parent.version".to_string(), raw.parent_version.clone());
+        }
+
+        let mut resolved_dependencies = Vec::new();
+        for mut dep in raw.dependencies {
+            dep.group_id = interpolate(&dep.group_id, &properties);
+            dep.artifact_id = interpolate(&dep.artifact_id, &properties);
+            dep.version = interpolate(&dep.version, &properties);
+            resolved_dependencies.push(dep);
+        }
+
+        let mut resolved_dep_mgmt = HashMap::new();
+        for ((g, a), v) in dependency_management {
+            let resolved_g = interpolate(&g, &properties);
+            let resolved_a = interpolate(&a, &properties);
+            let resolved_v = interpolate(&v, &properties);
+            resolved_dep_mgmt.insert((resolved_g, resolved_a), resolved_v);
+        }
+
+        Ok(ResolvedPom {
+            dependencies: resolved_dependencies,
+            dependency_management: resolved_dep_mgmt,
+            properties,
+        })
+    }
+
+    resolve_pom_inner(pom_path, m2_repo, 0)
+}
+
+fn interpolate(val: &str, properties: &HashMap<String, String>) -> String {
+    let mut result = val.to_string();
+    let mut iterations = 0;
+    while iterations < 5 {
+        let prev = result.clone();
+        if let Some(start) = result.find("${") {
+            if let Some(end) = result[start..].find('}') {
+                let key = &result[start + 2..start + end];
+                if let Some(replacement) = properties.get(key) {
+                    result = format!("{}{}{}", &result[..start], replacement, &result[start + end + 1..]);
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        } else {
+            break;
+        }
+        if prev == result {
+            break;
+        }
+        iterations += 1;
+    }
+    result
+}
+
+fn resolve_maven_dependencies(pom_path: &Path) -> std::result::Result<Vec<PathBuf>, JavaError> {
+    let home_dir = std::env::var("USERPROFILE")
+        .map(PathBuf::from)
+        .or_else(|_| std::env::var("HOME").map(PathBuf::from))
+        .map_err(|_| JavaError::Other("Could not determine user home directory".to_string()))?;
+    let m2_repo = home_dir.join(".m2").join("repository");
+
+    let resolved = resolve_pom_recursive(pom_path, &m2_repo)?;
+    let mut jar_paths = Vec::new();
+
+    for mut dep in resolved.dependencies {
+        if dep.version.is_empty() {
+            if let Some(v) = resolved.dependency_management.get(&(dep.group_id.clone(), dep.artifact_id.clone())) {
+                dep.version = v.clone();
+            }
+        }
+
+        if dep.version.is_empty() {
+            continue;
+        }
+
+        if dep.scope == "test" {
+            continue;
+        }
+
+        let jar_path = m2_repo
+            .join(dep.group_id.replace('.', "/"))
+            .join(&dep.artifact_id)
+            .join(&dep.version)
+            .join(format!("{}-{}.jar", dep.artifact_id, dep.version));
+
+        if jar_path.exists() {
+            jar_paths.push(jar_path);
+        } else {
+            tracing::warn!("Maven dependency jar missing: {:?}", jar_path);
+        }
+    }
+
+    Ok(jar_paths)
 }
 
 #[cfg(test)]

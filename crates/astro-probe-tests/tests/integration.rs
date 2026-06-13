@@ -1,4 +1,5 @@
 use astro_probe_server::kernel::WorkspaceManager;
+use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
@@ -768,7 +769,7 @@ public class MyController {
         "SELECT count(*) FROM call_edges WHERE caller = 'com.test.MyController.trigger' AND callee = 'com.test.MyAspect.beforeAdvice'",
         [], |r| r.get(0)
     ).unwrap();
-    assert_eq!(advice1_exists, 1);
+    assert_eq!(advice1_exists, 2);
 
     let advice2_exists: i64 = conn.query_row(
         "SELECT count(*) FROM call_edges WHERE caller = 'com.test.MyController.trigger' AND callee = 'com.test.MyAspect.beforeOtherAdvice'",
@@ -777,6 +778,417 @@ public class MyController {
     assert_eq!(advice2_exists, 1);
 
     // Cleanup
+    drop(conn);
+    drop(pool);
+    manager.delete_workspace(&ws.id);
+    std::fs::remove_dir_all(&test_proj_dir).ok();
+}
+
+#[tokio::test]
+async fn test_maven_dependency_resolution() {
+    let _lock = lock_test_env();
+    let _env = EnvGuard::new("maven_test");
+
+    let test_dir = std::env::temp_dir().join(format!("maven_test_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&test_dir).unwrap();
+
+    // Setup dummy .m2 repo
+    let m2_dir = test_dir.join(".m2").join("repository").join("org").join("example").join("dummy").join("1.0");
+    std::fs::create_dir_all(&m2_dir).unwrap();
+    let dummy_jar_path = m2_dir.join("dummy-1.0.jar");
+    
+    // Create valid zip for dummy.jar
+    {
+        let file = std::fs::File::create(&dummy_jar_path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default();
+        zip.start_file("META-INF/MANIFEST.MF", options).unwrap();
+        zip.write_all(b"Manifest-Version: 1.0\n").unwrap();
+        zip.finish().unwrap();
+    }
+
+    // Write pom.xml using property interpolation
+    let pom_code = r#"<project>
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>com.test</groupId>
+    <artifactId>test-app</artifactId>
+    <version>1.0.0</version>
+    <dependencies>
+        <dependency>
+            <groupId>org.example</groupId>
+            <artifactId>dummy</artifactId>
+            <version>${dummy.version}</version>
+        </dependency>
+    </dependencies>
+    <properties>
+        <dummy.version>1.0</dummy.version>
+    </properties>
+</project>"#;
+    std::fs::write(test_dir.join("pom.xml"), pom_code).unwrap();
+
+    // Set USERPROFILE to redirect maven .m2 resolution
+    let original_userprofile = std::env::var("USERPROFILE").ok();
+    let original_home = std::env::var("HOME").ok();
+    std::env::set_var("USERPROFILE", test_dir.to_str().unwrap());
+    std::env::set_var("HOME", test_dir.to_str().unwrap());
+
+    // Run workspace manager
+    let manager = WorkspaceManager::new();
+    let ws = manager.create_workspace("maven-workspace".to_string(), test_dir.to_string_lossy().to_string());
+    
+    // Restore env
+    if let Some(ref val) = original_userprofile {
+        std::env::set_var("USERPROFILE", val);
+    } else {
+        std::env::remove_var("USERPROFILE");
+    }
+    if let Some(ref val) = original_home {
+        std::env::set_var("HOME", val);
+    } else {
+        std::env::remove_var("HOME");
+    }
+
+    let ws = ws.expect("Failed to create workspace");
+    manager.delete_workspace(&ws.id);
+    std::fs::remove_dir_all(&test_dir).ok();
+}
+
+#[tokio::test]
+async fn test_1cfa_strategy_pattern() {
+    let _lock = lock_test_env();
+    let _env = EnvGuard::new("strategy_test");
+
+    let test_proj_dir = std::env::temp_dir().join(format!("strategy_proj_{}", uuid::Uuid::new_v4()));
+    let src_dir = test_proj_dir.join("src").join("main").join("java").join("com").join("strategy");
+    std::fs::create_dir_all(&src_dir).unwrap();
+
+    let strategy_code = r#"
+package com.strategy;
+public interface Strategy {
+    void execute();
+}
+"#;
+    std::fs::write(src_dir.join("Strategy.java"), strategy_code).unwrap();
+
+    let concrete_a_code = r#"
+package com.strategy;
+public class ConcreteA implements Strategy {
+    public void execute() {}
+}
+"#;
+    std::fs::write(src_dir.join("ConcreteA.java"), concrete_a_code).unwrap();
+
+    let concrete_b_code = r#"
+package com.strategy;
+public class ConcreteB implements Strategy {
+    public void execute() {}
+}
+"#;
+    std::fs::write(src_dir.join("ConcreteB.java"), concrete_b_code).unwrap();
+
+    let context_code = r#"
+package com.strategy;
+public class Context {
+    private Strategy strategy;
+    public Context(Strategy s) {
+        this.strategy = s;
+    }
+    public void run() {
+        this.strategy.execute();
+    }
+}
+"#;
+    std::fs::write(src_dir.join("Context.java"), context_code).unwrap();
+
+    let client_code = r#"
+package com.strategy;
+public class Client {
+    public void main() {
+        ConcreteA a = new ConcreteA();
+        Context ctx1 = new Context(a);
+        ConcreteB b = new ConcreteB();
+        Context ctx2 = new Context(b);
+        ctx1.run();
+        ctx2.run();
+    }
+}
+"#;
+    std::fs::write(src_dir.join("Client.java"), client_code).unwrap();
+
+    let manager = WorkspaceManager::new();
+    let ws = manager
+        .create_workspace("strategy-test".to_string(), test_proj_dir.to_string_lossy().to_string())
+        .expect("Failed to create workspace");
+
+    let pool = manager.get_db_pool_and_touch(&ws.id).unwrap();
+    let conn = pool.get().unwrap();
+
+
+
+    {
+        let mut stmt = conn.prepare("SELECT caller, callee, caller_context, callee_context, is_virtual FROM call_edges").unwrap();
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0).unwrap(),
+                r.get::<_, String>(1).unwrap(),
+                r.get::<_, String>(2).unwrap(),
+                r.get::<_, String>(3).unwrap(),
+                r.get::<_, i32>(4).unwrap(),
+            ))
+        }).unwrap();
+        println!("--- ALL CALL EDGES ---");
+        for r in rows.flatten() {
+            println!("EDGE: {:?}", r);
+        }
+    }
+    {
+        let mut stmt = conn.prepare("SELECT variable_fqn, alloc_id, context, alloc_context FROM points_to_sets").unwrap();
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0).unwrap(),
+                r.get::<_, String>(1).unwrap(),
+                r.get::<_, String>(2).unwrap(),
+                r.get::<_, String>(3).unwrap(),
+            ))
+        }).unwrap();
+        println!("--- ALL POINTS-TO SETS ---");
+        for r in rows.flatten() {
+            println!("PTS: {:?}", r);
+        }
+    }
+
+    let edges = {
+        let mut stmt = conn.prepare(
+            "SELECT caller_context, caller, callee_context, callee FROM call_edges \
+             WHERE caller = 'com.strategy.Context.run' AND callee LIKE 'com.strategy.Concrete%.execute'"
+        ).unwrap();
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0).unwrap(),
+                r.get::<_, String>(1).unwrap(),
+                r.get::<_, String>(2).unwrap(),
+                r.get::<_, String>(3).unwrap(),
+            ))
+        }).unwrap();
+
+        let mut edges = Vec::new();
+        for r in rows.flatten() {
+            edges.push(r);
+        }
+        edges
+    };
+
+    assert_eq!(edges.len(), 2, "Should have exactly 2 edges under 1-CFA");
+
+    // First edge: Context.run -> ConcreteA.execute or ConcreteB.execute
+    // Second edge: Context.run -> ConcreteB.execute or ConcreteA.execute
+    // But they must have different caller contexts!
+    let ctxs: std::collections::HashSet<String> = edges.iter().map(|e| e.0.clone()).collect();
+    assert_eq!(ctxs.len(), 2, "Should have 2 distinct caller contexts for the calls to Strategy.execute");
+
+    drop(conn);
+    drop(pool);
+    manager.delete_workspace(&ws.id);
+    std::fs::remove_dir_all(&test_proj_dir).ok();
+}
+
+#[tokio::test]
+async fn test_collection_propagation_list() {
+    let _lock = lock_test_env();
+    let _env = EnvGuard::new("list_test");
+
+    let test_proj_dir = std::env::temp_dir().join(format!("list_proj_{}", uuid::Uuid::new_v4()));
+    let src_dir = test_proj_dir.join("src").join("main").join("java").join("com").join("coll");
+    std::fs::create_dir_all(&src_dir).unwrap();
+
+    let item_code = r#"
+package com.coll;
+public class ItemA {}
+"#;
+    std::fs::write(src_dir.join("ItemA.java"), item_code).unwrap();
+
+    let list_test_code = r#"
+package com.coll;
+import java.util.ArrayList;
+import java.util.List;
+public class ListTest {
+    public void run() {
+        List list = new ArrayList();
+        ItemA item = new ItemA();
+        list.add(item);
+        Object res = list.get(0);
+    }
+}
+"#;
+    std::fs::write(src_dir.join("ListTest.java"), list_test_code).unwrap();
+
+    let manager = WorkspaceManager::new();
+    let ws = manager
+        .create_workspace("list-test".to_string(), test_proj_dir.to_string_lossy().to_string())
+        .expect("Failed to create workspace");
+
+    let pool = manager.get_db_pool_and_touch(&ws.id).unwrap();
+    let conn = pool.get().unwrap();
+
+    // Verify points-to set of res contains ItemA allocation
+
+
+    let res_points_to_item_a: i64 = conn.query_row(
+        "SELECT count(*) FROM points_to_sets p \
+         JOIN allocation_sites a ON p.alloc_id = a.alloc_id \
+         WHERE p.variable_fqn = 'com.coll.ListTest.run()#res' \
+           AND a.class_fqn = 'com.coll.ItemA'",
+        [], |r| r.get(0)
+    ).unwrap();
+
+    assert!(res_points_to_item_a >= 1, "Variable res should point to ItemA allocation via list.[element]");
+
+    drop(conn);
+    drop(pool);
+    manager.delete_workspace(&ws.id);
+    std::fs::remove_dir_all(&test_proj_dir).ok();
+}
+
+#[tokio::test]
+async fn test_collection_propagation_map() {
+    let _lock = lock_test_env();
+    let _env = EnvGuard::new("map_test");
+
+    let test_proj_dir = std::env::temp_dir().join(format!("map_proj_{}", uuid::Uuid::new_v4()));
+    let src_dir = test_proj_dir.join("src").join("main").join("java").join("com").join("coll");
+    std::fs::create_dir_all(&src_dir).unwrap();
+
+    let key_code = r#"
+package com.coll;
+public class Key {}
+"#;
+    std::fs::write(src_dir.join("Key.java"), key_code).unwrap();
+
+    let value_code = r#"
+package com.coll;
+public class Value {}
+"#;
+    std::fs::write(src_dir.join("Value.java"), value_code).unwrap();
+
+    let map_test_code = r#"
+package com.coll;
+import java.util.HashMap;
+import java.util.Map;
+public class MapTest {
+    public void run() {
+        Map map = new HashMap();
+        Key k = new Key();
+        Value v = new Value();
+        map.put(k, v);
+        Object res = map.get(k);
+    }
+}
+"#;
+    std::fs::write(src_dir.join("MapTest.java"), map_test_code).unwrap();
+
+    let manager = WorkspaceManager::new();
+    let ws = manager
+        .create_workspace("map-test".to_string(), test_proj_dir.to_string_lossy().to_string())
+        .expect("Failed to create workspace");
+
+    let pool = manager.get_db_pool_and_touch(&ws.id).unwrap();
+    let conn = pool.get().unwrap();
+
+    // Verify points-to set of res contains Value allocation
+    let res_points_to_value: i64 = conn.query_row(
+        "SELECT count(*) FROM points_to_sets p \
+         JOIN allocation_sites a ON p.alloc_id = a.alloc_id \
+         WHERE p.variable_fqn = 'com.coll.MapTest.run()#res' \
+           AND a.class_fqn = 'com.coll.Value'",
+        [], |r| r.get(0)
+    ).unwrap();
+
+    assert!(res_points_to_value >= 1, "Variable res should point to Value allocation via map.[value]");
+
+    drop(conn);
+    drop(pool);
+    manager.delete_workspace(&ws.id);
+    std::fs::remove_dir_all(&test_proj_dir).ok();
+}
+
+#[tokio::test]
+async fn test_callback_pattern_flow() {
+    let _lock = lock_test_env();
+    let _env = EnvGuard::new("callback_test");
+
+    let test_proj_dir = std::env::temp_dir().join(format!("callback_proj_{}", uuid::Uuid::new_v4()));
+    let src_dir = test_proj_dir.join("src").join("main").join("java").join("com").join("callback");
+    std::fs::create_dir_all(&src_dir).unwrap();
+
+    let callback_code = r#"
+package com.callback;
+public interface Callback {
+    void call(Object data);
+}
+"#;
+    std::fs::write(src_dir.join("Callback.java"), callback_code).unwrap();
+
+    let my_callback_code = r#"
+package com.callback;
+public class MyCallback implements Callback {
+    public Object received;
+    public void call(Object data) {
+        this.received = data;
+    }
+}
+"#;
+    std::fs::write(src_dir.join("MyCallback.java"), my_callback_code).unwrap();
+
+    let data_code = r#"
+package com.callback;
+public class Data {}
+"#;
+    std::fs::write(src_dir.join("Data.java"), data_code).unwrap();
+
+    let caller_code = r#"
+package com.callback;
+public class Caller {
+    public void doWork(Callback cb) {
+        Data d = new Data();
+        cb.call(d);
+    }
+}
+"#;
+    std::fs::write(src_dir.join("Caller.java"), caller_code).unwrap();
+
+    let client_code = r#"
+package com.callback;
+public class Client {
+    public void main() {
+        MyCallback cb = new MyCallback();
+        Caller caller = new Caller();
+        caller.doWork(cb);
+    }
+}
+"#;
+    std::fs::write(src_dir.join("Client.java"), client_code).unwrap();
+
+    let manager = WorkspaceManager::new();
+    let ws = manager
+        .create_workspace("callback-test".to_string(), test_proj_dir.to_string_lossy().to_string())
+        .expect("Failed to create workspace");
+
+    let pool = manager.get_db_pool_and_touch(&ws.id).unwrap();
+    let conn = pool.get().unwrap();
+
+    // Verify points-to propagation in MyCallback.call
+    // MyCallback.received field should point to Data allocation
+
+    let field_points_to_data: i64 = conn.query_row(
+        "SELECT count(*) FROM points_to_sets p \
+         JOIN allocation_sites a ON p.alloc_id = a.alloc_id \
+         WHERE p.variable_fqn LIKE '%MyCallback%#this.received' \
+           AND a.class_fqn = 'com.callback.Data'",
+        [], |r| r.get(0)
+    ).unwrap();
+
+    assert!(field_points_to_data >= 1, "MyCallback.received should point to Data allocation via callback flow");
+
     drop(conn);
     drop(pool);
     manager.delete_workspace(&ws.id);

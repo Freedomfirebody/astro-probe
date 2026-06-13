@@ -31,3 +31,7 @@ cafebabe = "0.3.1"
 
 [patch.crates-io]
 cafebabe = { path = "crates/cafebabe" }
+
+[profile.dev]
+opt-level = 3
+

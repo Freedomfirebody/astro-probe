@@ -653,6 +653,8 @@ impl JavaParser {
                     )?;
                     conn.execute("DELETE FROM method_annotations WHERE method_fqn = ?1 OR method_fqn LIKE ?2", [class_fqn, &class_prefix_like])?;
                     conn.execute("DELETE FROM parameter_annotations WHERE method_fqn = ?1 OR method_fqn LIKE ?2", [class_fqn, &class_prefix_like])?;
+                    conn.execute("DELETE FROM points_to_sets WHERE variable_fqn LIKE ?1 OR variable_fqn LIKE ?2", [class_fqn, &class_prefix_like])?;
+                    conn.execute("DELETE FROM call_edges WHERE caller = ?1 OR caller LIKE ?2 OR callee = ?1 OR callee LIKE ?2", [class_fqn, &class_prefix_like])?;
                 }
 
                 for file_path in dirty_files.iter().chain(deleted_files.iter()) {
@@ -2280,6 +2282,143 @@ fn process_rhs_expression(
                 "INSERT OR REPLACE INTO call_arguments (call_id, arg_index, arg_var, arg_type) VALUES (?1, ?2, ?3, ?4)",
                 [Some(call_id.as_str()), Some(index_str.as_str()), Some(arg_simple.as_str()), Some(arg_types[i].as_str())],
             )?;
+        }
+
+        // Collection Generic Type Propagation
+        let rec_var = match resolved_receiver {
+            Some(ref r) => r.clone(),
+            None => format!("{}#this", caller_fqn),
+        };
+
+        match method_name.as_str() {
+            "add" | "addElement" | "offer" | "offerFirst" | "offerLast" | "push" => {
+                let elem_var = if method_name == "add" && arg_simple_vars.len() == 2 {
+                    arg_simple_vars.get(1)
+                } else {
+                    arg_simple_vars.first()
+                };
+                if let Some(elem) = elem_var {
+                    let lhs_field = format!("{}.[element]", rec_var);
+                    conn.execute(
+                        "INSERT INTO source_assignments (lhs, rhs, assignment_type, method_fqn) VALUES (?1, ?2, 'FIELD_WRITE', ?3)",
+                        [lhs_field.as_str(), elem.as_str(), caller_fqn],
+                    )?;
+                }
+            }
+            "addAll" => {
+                let other_coll = if arg_simple_vars.len() == 2 {
+                    arg_simple_vars.get(1)
+                } else {
+                    arg_simple_vars.first()
+                };
+                if let Some(other) = other_coll {
+                    let temp_elem = format!("temp_coll_elem_{}", alloc_counter);
+                    *alloc_counter += 1;
+                    let temp_elem_fqn = format!("{}#{}", caller_fqn, temp_elem);
+                    let rhs_field = format!("{}.[element]", other);
+                    conn.execute(
+                        "INSERT INTO source_assignments (lhs, rhs, assignment_type, method_fqn) VALUES (?1, ?2, 'FIELD_READ', ?3)",
+                        [temp_elem_fqn.as_str(), rhs_field.as_str(), caller_fqn],
+                    )?;
+                    let lhs_field = format!("{}.[element]", rec_var);
+                    conn.execute(
+                        "INSERT INTO source_assignments (lhs, rhs, assignment_type, method_fqn) VALUES (?1, ?2, 'FIELD_WRITE', ?3)",
+                        [lhs_field.as_str(), temp_elem_fqn.as_str(), caller_fqn],
+                    )?;
+                }
+            }
+            "get" | "remove" | "pop" | "poll" | "pollFirst" | "pollLast" | "peek" | "peekFirst" | "peekLast" | "first" | "last" | "element" => {
+                let is_map = receiver_type.contains("Map") || receiver_type.contains("map");
+                let field_name = if is_map && method_name == "get" { "[value]" } else { "[element]" };
+                let rhs_field = format!("{}.{}", rec_var, field_name);
+                conn.execute(
+                    "INSERT INTO source_assignments (lhs, rhs, assignment_type, method_fqn) VALUES (?1, ?2, 'FIELD_READ', ?3)",
+                    [temp_lhs_fqn.as_str(), rhs_field.as_str(), caller_fqn],
+                )?;
+            }
+            "put" => {
+                if arg_simple_vars.len() >= 2 {
+                    let key_var = &arg_simple_vars[0];
+                    let val_var = &arg_simple_vars[1];
+                    let lhs_key = format!("{}.[key]", rec_var);
+                    conn.execute(
+                        "INSERT INTO source_assignments (lhs, rhs, assignment_type, method_fqn) VALUES (?1, ?2, 'FIELD_WRITE', ?3)",
+                        [lhs_key.as_str(), key_var.as_str(), caller_fqn],
+                    )?;
+                    let lhs_val = format!("{}.[value]", rec_var);
+                    conn.execute(
+                        "INSERT INTO source_assignments (lhs, rhs, assignment_type, method_fqn) VALUES (?1, ?2, 'FIELD_WRITE', ?3)",
+                        [lhs_val.as_str(), val_var.as_str(), caller_fqn],
+                    )?;
+                    let rhs_field = format!("{}.[value]", rec_var);
+                    conn.execute(
+                        "INSERT INTO source_assignments (lhs, rhs, assignment_type, method_fqn) VALUES (?1, ?2, 'FIELD_READ', ?3)",
+                        [temp_lhs_fqn.as_str(), rhs_field.as_str(), caller_fqn],
+                    )?;
+                }
+            }
+            "putAll" => {
+                if let Some(other_map) = arg_simple_vars.first() {
+                    let temp_key = format!("temp_map_key_{}", alloc_counter);
+                    *alloc_counter += 1;
+                    let temp_key_fqn = format!("{}#{}", caller_fqn, temp_key);
+                    let rhs_key = format!("{}.[key]", other_map);
+                    conn.execute(
+                        "INSERT INTO source_assignments (lhs, rhs, assignment_type, method_fqn) VALUES (?1, ?2, 'FIELD_READ', ?3)",
+                        [temp_key_fqn.as_str(), rhs_key.as_str(), caller_fqn],
+                    )?;
+                    let lhs_key = format!("{}.[key]", rec_var);
+                    conn.execute(
+                        "INSERT INTO source_assignments (lhs, rhs, assignment_type, method_fqn) VALUES (?1, ?2, 'FIELD_WRITE', ?3)",
+                        [lhs_key.as_str(), temp_key_fqn.as_str(), caller_fqn],
+                    )?;
+
+                    let temp_val = format!("temp_map_val_{}", alloc_counter);
+                    *alloc_counter += 1;
+                    let temp_val_fqn = format!("{}#{}", caller_fqn, temp_val);
+                    let rhs_val = format!("{}.[value]", other_map);
+                    conn.execute(
+                        "INSERT INTO source_assignments (lhs, rhs, assignment_type, method_fqn) VALUES (?1, ?2, 'FIELD_READ', ?3)",
+                        [temp_val_fqn.as_str(), rhs_val.as_str(), caller_fqn],
+                    )?;
+                    let lhs_val = format!("{}.[value]", rec_var);
+                    conn.execute(
+                        "INSERT INTO source_assignments (lhs, rhs, assignment_type, method_fqn) VALUES (?1, ?2, 'FIELD_WRITE', ?3)",
+                        [lhs_val.as_str(), temp_val_fqn.as_str(), caller_fqn],
+                    )?;
+                }
+            }
+            "keySet" => {
+                let rhs_field = format!("{}.[key]", rec_var);
+                let lhs_field = format!("{}.[element]", temp_lhs_fqn);
+                let temp_key = format!("temp_key_flow_{}", alloc_counter);
+                *alloc_counter += 1;
+                let temp_key_fqn = format!("{}#{}", caller_fqn, temp_key);
+                conn.execute(
+                    "INSERT INTO source_assignments (lhs, rhs, assignment_type, method_fqn) VALUES (?1, ?2, 'FIELD_READ', ?3)",
+                    [temp_key_fqn.as_str(), rhs_field.as_str(), caller_fqn],
+                )?;
+                conn.execute(
+                    "INSERT INTO source_assignments (lhs, rhs, assignment_type, method_fqn) VALUES (?1, ?2, 'FIELD_WRITE', ?3)",
+                    [lhs_field.as_str(), temp_key_fqn.as_str(), caller_fqn],
+                )?;
+            }
+            "values" => {
+                let rhs_field = format!("{}.[value]", rec_var);
+                let lhs_field = format!("{}.[element]", temp_lhs_fqn);
+                let temp_val = format!("temp_val_flow_{}", alloc_counter);
+                *alloc_counter += 1;
+                let temp_val_fqn = format!("{}#{}", caller_fqn, temp_val);
+                conn.execute(
+                    "INSERT INTO source_assignments (lhs, rhs, assignment_type, method_fqn) VALUES (?1, ?2, 'FIELD_READ', ?3)",
+                    [temp_val_fqn.as_str(), rhs_field.as_str(), caller_fqn],
+                )?;
+                conn.execute(
+                    "INSERT INTO source_assignments (lhs, rhs, assignment_type, method_fqn) VALUES (?1, ?2, 'FIELD_WRITE', ?3)",
+                    [lhs_field.as_str(), temp_val_fqn.as_str(), caller_fqn],
+                )?;
+            }
+            _ => {}
         }
 
         handle_field_write(

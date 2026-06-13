@@ -117,12 +117,12 @@ impl SpringEventLineageExtension {
             "SELECT DISTINCT class_fqn FROM class_hierarchy \
              WHERE parent_fqn LIKE '%ApplicationListener%'"
         )?;
+        let mut m_stmt = conn.prepare(
+            "SELECT method_fqn FROM method_declarations WHERE class_fqn = ?1 AND method_name = 'onApplicationEvent'"
+        )?;
         let mut rows2 = stmt2.query([])?;
         while let Some(row) = rows2.next()? {
             let class_fqn: String = row.get(0)?;
-            let mut m_stmt = conn.prepare(
-                "SELECT method_fqn FROM method_declarations WHERE class_fqn = ?1 AND method_name = 'onApplicationEvent'"
-            )?;
             let mut m_rows = m_stmt.query([&class_fqn])?;
             while let Some(m_row) = m_rows.next()? {
                 let method_fqn: String = m_row.get(0)?;
@@ -146,6 +146,10 @@ impl Default for SpringEventLineageExtension {
 }
 
 impl PointsToSolverExtension for SpringEventLineageExtension {
+    fn matches_call_site(&self, call: &CallSiteInfo) -> bool {
+        call.method_name == "publishEvent" || call.static_callee.is_some_and(|sc| sc.contains("publishEvent"))
+    }
+
     fn handle_call(
         &self,
         context: &mut ExtensionContext,
@@ -211,6 +215,10 @@ impl Default for AsyncExecutionExtension {
 }
 
 impl PointsToSolverExtension for AsyncExecutionExtension {
+    fn matches_call_site(&self, call: &CallSiteInfo) -> bool {
+        call.method_name == "start" || call.method_name == "execute" || call.method_name == "submit"
+    }
+
     fn handle_call(
         &self,
         context: &mut ExtensionContext,
@@ -487,6 +495,10 @@ impl SpringAopPointcutExtension {
                 OR annotation_name LIKE 'AfterThrowing:%' \
                 OR annotation_name LIKE 'AfterReturning:%'"
         )?;
+        let mut pc_stmt = conn.prepare(
+            "SELECT annotation_name FROM method_annotations \
+             WHERE method_fqn LIKE ?1 AND annotation_name LIKE 'Pointcut:%'"
+        )?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let advice_method_fqn: String = row.get(0)?;
@@ -503,10 +515,6 @@ impl SpringAopPointcutExtension {
                 let class_name = get_class_name(&advice_method_fqn);
                 let target_method_prefix = format!("{}.{}(", class_name, pointcut_method_name);
 
-                let mut pc_stmt = conn.prepare(
-                    "SELECT annotation_name FROM method_annotations \
-                     WHERE method_fqn LIKE ?1 AND annotation_name LIKE 'Pointcut:%'"
-                )?;
                 let mut pc_rows = pc_stmt.query([format!("{}%", target_method_prefix)])?;
                 if let Some(pc_row) = pc_rows.next()? {
                     let pc_ann: String = pc_row.get(0)?;
@@ -537,6 +545,10 @@ impl Default for SpringAopPointcutExtension {
 }
 
 impl PointsToSolverExtension for SpringAopPointcutExtension {
+    fn needs_points_to(&self) -> bool {
+        false
+    }
+
     fn handle_call(
         &self,
         context: &mut ExtensionContext,
