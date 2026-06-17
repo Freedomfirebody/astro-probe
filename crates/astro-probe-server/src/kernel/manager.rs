@@ -68,10 +68,13 @@ impl WorkspaceManager {
             loop {
                 tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
-                let timeout_secs = std::env::var("ASTRO_PROBE_IDLE_TIMEOUT_SECS")
+                let mut timeout_secs = std::env::var("ASTRO_PROBE_IDLE_TIMEOUT_SECS")
                     .ok()
                     .and_then(|val| val.parse::<u64>().ok())
                     .unwrap_or(10800); // Default 3 hours
+                if timeout_secs < 5 {
+                    timeout_secs = 5;
+                }
 
                 if let Ok(mut guard) = workspaces_clone.write() {
                     for ws_state in guard.values_mut() {
@@ -245,22 +248,37 @@ impl WorkspaceManager {
                     global_conn.execute("DELETE FROM workspace_jars WHERE workspace_id = ?1", [id]);
             }
 
-            // Delete the database file outside the lock
+            // Delete the database file and WAL/SHM files outside the lock with retries
             let db_path = Path::new(&project_path).join(".astro-probe.db");
-            if db_path.exists() {
-                if let Err(e) = std::fs::remove_file(&db_path) {
-                    tracing::warn!(
-                        "Failed to delete database file at first attempt: {}. Retrying in 50ms...",
-                        e
-                    );
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                    if let Err(retry_err) = std::fs::remove_file(&db_path) {
-                        tracing::warn!("Failed to delete database file on retry: {}", retry_err);
-                    } else {
-                        tracing::info!("Database file deleted successfully on retry");
+            let wal_path = Path::new(&project_path).join(".astro-probe.db-wal");
+            let shm_path = Path::new(&project_path).join(".astro-probe.db-shm");
+
+            // Delete WAL and SHM files first, then main database file
+            let paths_to_delete = vec![wal_path, shm_path, db_path];
+            for path in paths_to_delete {
+                if path.exists() {
+                    let mut deleted = false;
+                    for attempt in 1..=20 {
+                        match std::fs::remove_file(&path) {
+                            Ok(_) => {
+                                tracing::info!("Successfully deleted file: {:?}", path);
+                                deleted = true;
+                                break;
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Attempt {} to delete {:?} failed: {}. Retrying in 100ms...",
+                                    attempt,
+                                    path,
+                                    e
+                                );
+                                std::thread::sleep(std::time::Duration::from_millis(100));
+                            }
+                        }
                     }
-                } else {
-                    tracing::info!("Database file deleted successfully");
+                    if !deleted {
+                        tracing::error!("Failed to delete file {:?} after 20 attempts", path);
+                    }
                 }
             }
             true
