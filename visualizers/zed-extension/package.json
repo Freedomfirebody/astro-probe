@@ -7,7 +7,6 @@
     "build": "esbuild lsp-adapter.js --bundle --platform=node --outfile=dist/lsp-adapter.js"
   },
   "dependencies": {
-    "astro-probe-visualizers": "file:..",
     "axios": "^1.6.8",
     "open": "^8.4.2",
     "vscode-languageserver": "^9.0.1",

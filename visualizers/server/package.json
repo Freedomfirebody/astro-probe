@@ -8,7 +8,6 @@
     "dev": "nodemon src/index.js"
   },
   "dependencies": {
-    "astro-probe-visualizers": "file:..",
     "axios": "^1.6.8",
     "better-sqlite3": "^11.0.0",
     "cors": "^2.8.5",

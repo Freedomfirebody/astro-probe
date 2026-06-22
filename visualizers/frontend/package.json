@@ -10,7 +10,6 @@
   },
   "dependencies": {
     "@monaco-editor/react": "^4.6.0",
-    "astro-probe-visualizers": "file:..",
     "cytoscape": "^3.29.2",
     "cytoscape-dagre": "^2.5.0",
     "lucide-react": "^0.395.0",
