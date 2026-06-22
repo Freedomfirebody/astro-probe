@@ -16,12 +16,13 @@ router.get('/', async (req, res) => {
   }
 
   try {
-    const projectPath = await getWorkspacePath(id);
-    if (!projectPath) {
+    const workspaceInfo = await getWorkspacePath(id);
+    if (!workspaceInfo) {
       return res.status(404).json({ error: `Workspace with ID ${id} not found on backend` });
     }
-
-    const symbolLocation = resolveJavaSymbol(projectPath, fqn);
+    const { projectPath, dbPath } = workspaceInfo;
+ 
+    const symbolLocation = resolveJavaSymbol(projectPath, dbPath, fqn);
     res.json(symbolLocation);
   } catch (error) {
     console.error(`[Symbol Route Error] FAILED resolving fqn '${fqn}':`, error.message);

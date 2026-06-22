@@ -1,6 +1,6 @@
 use rusqlite::Connection;
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Barrier};
 use std::time::{Duration, Instant};
 use astro_probe_server::kernel::WorkspaceManager;
@@ -128,13 +128,20 @@ async fn test_high_concurrency_workspace_deletion() {
     std::fs::create_dir_all(&ws_dir).unwrap();
 
     let manager = Arc::new(WorkspaceManager::new());
+    {
+        let ws_list = manager.list_workspaces();
+        if let Some(existing) = ws_list.iter().find(|w| w.name == "concurrency_ws") {
+            manager.delete_workspace(&existing.id);
+        }
+    }
     let ws = manager
         .create_workspace("concurrency_ws".to_string(), ws_dir.to_string_lossy().to_string())
         .unwrap();
 
-    let db_path = ws_dir.join(".astro-probe.db");
-    let wal_path = ws_dir.join(".astro-probe.db-wal");
-    let shm_path = ws_dir.join(".astro-probe.db-shm");
+    let db_path = PathBuf::from(&ws.db_path);
+    let parent = db_path.parent().unwrap().to_path_buf();
+    let wal_path = parent.join("astro-probe.db-wal");
+    let shm_path = parent.join("astro-probe.db-shm");
 
     // Initialize DB schema inside the workspace db
     {
@@ -215,6 +222,7 @@ async fn test_high_concurrency_workspace_deletion() {
 
     // Clean up directory
     let _ = std::fs::remove_dir_all(&ws_dir);
+    let _ = std::fs::remove_dir_all(&parent);
 }
 
 #[tokio::test]
@@ -228,6 +236,12 @@ async fn test_idle_timeout_clamping() {
     std::fs::create_dir_all(&ws_dir).unwrap();
 
     let manager = WorkspaceManager::new();
+    {
+        let ws_list = manager.list_workspaces();
+        if let Some(existing) = ws_list.iter().find(|w| w.name == "clamp_test_ws") {
+            manager.delete_workspace(&existing.id);
+        }
+    }
     let ws = manager
         .create_workspace("clamp_test_ws".to_string(), ws_dir.to_string_lossy().to_string())
         .unwrap();
@@ -252,6 +266,8 @@ async fn test_idle_timeout_clamping() {
         "Workspace should be Idle after 6s (exceeds clamped 5s minimum)"
     );
 
+    let db_path = PathBuf::from(&ws.db_path);
+    let _ = std::fs::remove_dir_all(db_path.parent().unwrap());
     manager.delete_workspace(&ws.id);
     let _ = std::fs::remove_dir_all(&ws_dir);
 
@@ -261,6 +277,12 @@ async fn test_idle_timeout_clamping() {
     std::fs::create_dir_all(&ws_dir_invalid).unwrap();
 
     let manager_invalid = WorkspaceManager::new();
+    {
+        let ws_list = manager_invalid.list_workspaces();
+        if let Some(existing) = ws_list.iter().find(|w| w.name == "invalid_val_ws") {
+            manager_invalid.delete_workspace(&existing.id);
+        }
+    }
     let ws_invalid = manager_invalid
         .create_workspace("invalid_val_ws".to_string(), ws_dir_invalid.to_string_lossy().to_string())
         .unwrap();
@@ -274,6 +296,8 @@ async fn test_idle_timeout_clamping() {
         "Workspace should still be Loaded at 3s when env var is invalid (-1), defaulting to minimum 5s"
     );
 
+    let db_path_invalid = PathBuf::from(&ws_invalid.db_path);
+    let _ = std::fs::remove_dir_all(db_path_invalid.parent().unwrap());
     manager_invalid.delete_workspace(&ws_invalid.id);
     let _ = std::fs::remove_dir_all(&ws_dir_invalid);
 

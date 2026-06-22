@@ -98,12 +98,16 @@ async fn test_perf_benchmark_medium_spring() {
 
     let guard = TempProjectGuard::new(&project_path, "medium_spring_perf");
 
-    let db_path = guard.temp_dir.join(".astro-probe.db");
-    if db_path.exists() {
-        std::fs::remove_file(&db_path).ok();
-    }
-
     let manager = WorkspaceManager::new();
+    {
+        let ws_list = manager.list_workspaces();
+        if let Some(existing) = ws_list.iter().find(|w| w.name == "medium-spring-initial") {
+            manager.delete_workspace(&existing.id);
+        }
+        if let Some(existing) = ws_list.iter().find(|w| w.name == "medium-spring-incremental") {
+            manager.delete_workspace(&existing.id);
+        }
+    }
 
     // 1. Initial Analysis
     println!("Starting initial analysis of medium-spring...");

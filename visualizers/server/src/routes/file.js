@@ -20,10 +20,11 @@ router.get('/', async (req, res) => {
   }
 
   try {
-    const projectPath = await getWorkspacePath(id);
-    if (!projectPath) {
+    const workspaceInfo = await getWorkspacePath(id);
+    if (!workspaceInfo) {
       return res.status(404).json({ error: `Workspace with ID ${id} not found on backend` });
     }
+    const { projectPath } = workspaceInfo;
 
     // Resolve projectPath to canonical/absolute path
     let absoluteProjectPath;

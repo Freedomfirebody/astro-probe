@@ -727,12 +727,13 @@ async fn test_adversarial_workspace_deletion_wal_locks() {
         let conn = pool.get().unwrap();
         conn.execute("CREATE TABLE IF NOT EXISTS test_table (id INTEGER PRIMARY KEY);", []).unwrap();
         conn.execute("INSERT INTO test_table (id) VALUES (1);", []).unwrap();
-        conn.execute("PRAGMA wal_checkpoint(FULL);", []).unwrap();
+        conn.execute_batch("PRAGMA wal_checkpoint(FULL);").unwrap();
     }
 
-    let db_path = ws_dir.join(".astro-probe.db");
-    let wal_path = ws_dir.join(".astro-probe.db-wal");
-    let shm_path = ws_dir.join(".astro-probe.db-shm");
+    let db_path = PathBuf::from(&ws.db_path);
+    let parent = db_path.parent().unwrap().to_path_buf();
+    let wal_path = parent.join("astro-probe.db-wal");
+    let shm_path = parent.join("astro-probe.db-shm");
 
     assert!(db_path.exists());
 
@@ -747,6 +748,8 @@ async fn test_adversarial_workspace_deletion_wal_locks() {
         drop(conn);
     });
 
+    drop(pool);
+
     std::thread::sleep(std::time::Duration::from_millis(50));
     let deleted = manager.delete_workspace(&ws.id);
     assert!(deleted, "Workspace deletion should return true");
@@ -758,6 +761,7 @@ async fn test_adversarial_workspace_deletion_wal_locks() {
     assert!(!shm_path.exists(), "SHM file should be deleted");
 
     let _ = std::fs::remove_dir_all(&ws_dir);
+    let _ = std::fs::remove_dir_all(&parent);
 }
 
 #[tokio::test]
@@ -776,10 +780,11 @@ async fn test_adversarial_workspace_deletion_wal_locks_timeout() {
         let conn = pool.get().unwrap();
         conn.execute("CREATE TABLE IF NOT EXISTS test_table (id INTEGER PRIMARY KEY);", []).unwrap();
         conn.execute("INSERT INTO test_table (id) VALUES (1);", []).unwrap();
-        conn.execute("PRAGMA wal_checkpoint(FULL);", []).unwrap();
+        conn.execute_batch("PRAGMA wal_checkpoint(FULL);").unwrap();
     }
 
-    let db_path = ws_dir.join(".astro-probe.db");
+    let db_path = PathBuf::from(&ws.db_path);
+    let parent = db_path.parent().unwrap().to_path_buf();
 
     // Scenario B: Concurrent reader holds connection for 8000ms.
     // Deletion should fail to remove files because it exceeds the 20x100ms (2000ms) retry duration.
@@ -792,6 +797,8 @@ async fn test_adversarial_workspace_deletion_wal_locks_timeout() {
         drop(conn);
     });
 
+    drop(pool);
+
     std::thread::sleep(std::time::Duration::from_millis(50));
     let deleted = manager.delete_workspace(&ws.id);
     assert!(deleted, "Workspace deletion should remove it from manager");
@@ -802,6 +809,7 @@ async fn test_adversarial_workspace_deletion_wal_locks_timeout() {
     assert!(db_path.exists(), "DB file should still exist on Windows since lock was held for 8000ms");
 
     let _ = std::fs::remove_dir_all(&ws_dir);
+    let _ = std::fs::remove_dir_all(&parent);
 }
 
 #[tokio::test]

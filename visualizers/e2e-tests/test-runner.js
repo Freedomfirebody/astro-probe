@@ -131,6 +131,27 @@ async function main() {
   try {
     const binaryPath = ensureRustDaemonBuilt();
 
+    // Clean up stale database files in the binary directory to ensure a fresh test environment
+    const binaryDir = path.dirname(binaryPath);
+    const dataDir = path.join(binaryDir, 'data');
+    const cacheDb = path.join(binaryDir, 'astro-probe-cache.db');
+    if (fs.existsSync(dataDir)) {
+      console.log(`Cleaning up stale data directory: ${dataDir}`);
+      try {
+        fs.rmSync(dataDir, { recursive: true, force: true });
+      } catch (err) {
+        console.warn(`Warning: failed to clean up data directory: ${err.message}`);
+      }
+    }
+    if (fs.existsSync(cacheDb)) {
+      console.log(`Cleaning up stale cache database: ${cacheDb}`);
+      try {
+        fs.rmSync(cacheDb, { force: true });
+      } catch (err) {
+        console.warn(`Warning: failed to clean up cache database: ${err.message}`);
+      }
+    }
+
     // Resolve free ports dynamically to prevent conflicts
     console.log('Scanning for available ports...');
     const rustPort = await getFreePort(8080);
@@ -145,7 +166,8 @@ async function main() {
       detached: process.platform !== 'win32',
       env: {
         ...process.env,
-        RUST_LOG: 'info'
+        RUST_LOG: 'info',
+        ASTRO_PROBE_IDLE_TIMEOUT_SECS: '5'
       }
     });
 
@@ -158,7 +180,7 @@ async function main() {
     console.log('Starting Mock Middle Layer Server...');
     middleLayerProcess = spawn('node', [path.join(__dirname, 'mock-middle-layer.js')], {
       cwd: __dirname,
-      stdio: 'inherit',
+      stdio: ['pipe', 'inherit', 'inherit'],
       detached: process.platform !== 'win32',
       env: {
         ...process.env,

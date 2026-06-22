@@ -13,6 +13,12 @@ struct Args {
 
     #[arg(short, long)]
     port: Option<u16>,
+
+    #[arg(long = "mcp-transport", alias = "mcp-transort")]
+    mcp_transport: Option<String>,
+
+    #[arg(long)]
+    db: Option<String>,
 }
 
 #[tokio::main]
@@ -24,6 +30,10 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let args = Args::parse();
+
+    if let Some(ref db_path) = args.db {
+        std::env::set_var("ASTRO_PROBE_GLOBAL_CACHE_PATH", db_path);
+    }
 
     let port = args
         .port

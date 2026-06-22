@@ -54,14 +54,96 @@ fn resolve_path(path_str: &str) -> PathBuf {
     path.to_path_buf()
 }
 
+fn get_project_key(project_path: &str) -> String {
+    let path = Path::new(project_path);
+    let folder_name = path.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown_project");
+    
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    project_path.hash(&mut hasher);
+    let hash_val = hasher.finish();
+    
+    format!("{}_{:x}", folder_name, hash_val)
+}
+
+fn get_db_path(project_path: &str) -> PathBuf {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    let key = get_project_key(project_path);
+    exe_dir.join("data").join(key).join("astro-probe.db")
+}
+
+fn get_db_path_str(project_path: &str) -> String {
+    get_db_path(project_path).to_string_lossy().to_string()
+}
+
 pub struct WorkspaceManager {
     workspaces: Arc<RwLock<HashMap<String, WorkspaceState>>>,
 }
 
 impl WorkspaceManager {
     pub fn new() -> Self {
+        let workspaces_map = if let Ok(global_conn) = astro_probe_db::establish_connection(get_global_cache_path()) {
+            let _ = global_conn.execute(
+                "CREATE TABLE IF NOT EXISTS workspaces (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL UNIQUE,
+                    project_path TEXT NOT NULL,
+                    status TEXT NOT NULL
+                );",
+                [],
+            );
+
+            let mut stmt = global_conn.prepare("SELECT id, name, project_path, status FROM workspaces").ok();
+            let mut map = HashMap::new();
+            if let Some(ref mut stmt) = stmt {
+                let rows = stmt.query_map([], |row| {
+                    let id: String = row.get(0)?;
+                    let name: String = row.get(1)?;
+                    let project_path: String = row.get(2)?;
+                    let status_str: String = row.get(3)?;
+                    let status = match status_str.as_str() {
+                        "loaded" => WorkspaceStatus::Loaded,
+                        "idle" => WorkspaceStatus::Idle,
+                        _ => WorkspaceStatus::Unloaded,
+                    };
+                    Ok((id, name, project_path, status))
+                });
+
+                if let Ok(rows) = rows {
+                    for row in rows {
+                        if let Ok((id, name, project_path, _status)) = row {
+                            // On startup, we start as Unloaded with no open pool
+                            let db_path = get_db_path_str(&project_path);
+                            let ws = Workspace {
+                                id: id.clone(),
+                                name,
+                                project_path: project_path.clone(),
+                                status: WorkspaceStatus::Unloaded,
+                                db_path,
+                            };
+                            let state = WorkspaceState {
+                                workspace: ws,
+                                db_pool: None,
+                                last_accessed: Arc::new(RwLock::new(Instant::now())),
+                            };
+                            map.insert(id, state);
+                        }
+                    }
+                }
+            }
+            map
+        } else {
+            HashMap::new()
+        };
+
         let workspaces: Arc<RwLock<HashMap<String, WorkspaceState>>> =
-            Arc::new(RwLock::new(HashMap::new()));
+            Arc::new(RwLock::new(workspaces_map));
         let workspaces_clone = Arc::clone(&workspaces);
 
         tokio::spawn(async move {
@@ -102,7 +184,7 @@ impl WorkspaceManager {
     }
 
     fn load_db_pool(&self, project_path: &str) -> anyhow::Result<DbPool> {
-        let db_path = Path::new(project_path).join(".astro-probe.db");
+        let db_path = get_db_path(project_path);
         // Ensure parent directories exist
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -121,9 +203,38 @@ impl WorkspaceManager {
         name: String,
         project_path: String,
     ) -> anyhow::Result<Workspace> {
-        let id = uuid::Uuid::new_v4().to_string();
-
+        if name.trim().is_empty() {
+            return Err(anyhow::anyhow!("Workspace name cannot be empty"));
+        }
         let resolved_path = resolve_path(&project_path).to_string_lossy().to_string();
+        if !std::path::Path::new(&resolved_path).exists() {
+            return Err(anyhow::anyhow!("Project path NotFound: {}", resolved_path));
+        }
+
+        // Check if name already exists
+        let existing_ws = {
+            let guard = self
+                .workspaces
+                .read()
+                .map_err(|e| anyhow::anyhow!("RwLock poisoned: {}", e))?;
+            guard.values()
+                .find(|state| state.workspace.name == name)
+                .map(|state| state.workspace.clone())
+        };
+
+        let id = if let Some(existing) = existing_ws {
+            if existing.project_path != resolved_path {
+                return Err(anyhow::anyhow!(
+                    "Workspace with name '{}' already exists with a different project path: {}",
+                    name,
+                    existing.project_path
+                ));
+            }
+            existing.id
+        } else {
+            uuid::Uuid::new_v4().to_string()
+        };
+
         let pool = self.load_db_pool(&resolved_path)?;
 
         // Initialize db schemas and parse java files
@@ -197,11 +308,13 @@ impl WorkspaceManager {
             println!("DfgAnalyzer took {:?}", t4.elapsed());
         }
 
+        let db_path_str = get_db_path_str(&resolved_path);
         let ws = Workspace {
             id: id.clone(),
-            name,
+            name: name.clone(),
             project_path: resolved_path,
             status: WorkspaceStatus::Loaded,
+            db_path: db_path_str,
         };
 
         let state = WorkspaceState {
@@ -209,6 +322,14 @@ impl WorkspaceManager {
             db_pool: Some(pool),
             last_accessed: Arc::new(RwLock::new(Instant::now())),
         };
+
+        // Insert or replace in global workspaces table
+        if let Ok(global_conn) = astro_probe_db::establish_connection(get_global_cache_path()) {
+            let _ = global_conn.execute(
+                "INSERT OR REPLACE INTO workspaces (id, name, project_path, status) VALUES (?1, ?2, ?3, ?4)",
+                [&id, &name, &ws.project_path, &ws.status.to_string()],
+            );
+        }
 
         let mut guard = self
             .workspaces
@@ -246,12 +367,15 @@ impl WorkspaceManager {
             if let Ok(global_conn) = astro_probe_db::establish_connection(get_global_cache_path()) {
                 let _ =
                     global_conn.execute("DELETE FROM workspace_jars WHERE workspace_id = ?1", [id]);
+                let _ =
+                    global_conn.execute("DELETE FROM workspaces WHERE id = ?1", [id]);
             }
 
             // Delete the database file and WAL/SHM files outside the lock with retries
-            let db_path = Path::new(&project_path).join(".astro-probe.db");
-            let wal_path = Path::new(&project_path).join(".astro-probe.db-wal");
-            let shm_path = Path::new(&project_path).join(".astro-probe.db-shm");
+            let db_path = get_db_path(&project_path);
+            let parent = db_path.parent().unwrap();
+            let wal_path = parent.join("astro-probe.db-wal");
+            let shm_path = parent.join("astro-probe.db-shm");
 
             // Delete WAL and SHM files first, then main database file
             let paths_to_delete = vec![wal_path, shm_path, db_path];
@@ -302,6 +426,13 @@ impl WorkspaceManager {
                     }
                 }
             }
+            // Update status in the database
+            if let Ok(global_conn) = astro_probe_db::establish_connection(get_global_cache_path()) {
+                let _ = global_conn.execute(
+                    "UPDATE workspaces SET status = ?1 WHERE id = ?2",
+                    [&state.workspace.status.to_string(), &id.to_string()],
+                );
+            }
             if let Ok(mut last_acc) = state.last_accessed.write() {
                 *last_acc = Instant::now();
             }
@@ -316,10 +447,92 @@ impl WorkspaceManager {
         if let Some(state) = guard.get_mut(id) {
             state.workspace.status = WorkspaceStatus::Unloaded;
             state.db_pool = None; // drops pool
+            // Update status in the database
+            if let Ok(global_conn) = astro_probe_db::establish_connection(get_global_cache_path()) {
+                let _ = global_conn.execute(
+                    "UPDATE workspaces SET status = ?1 WHERE id = ?2",
+                    [&state.workspace.status.to_string(), &id.to_string()],
+                );
+            }
             Some(state.workspace.clone())
         } else {
             None
         }
+    }
+
+    pub fn get_or_create_workspace_id(
+        &self,
+        workspace_id: Option<&str>,
+        project_path: Option<&str>,
+    ) -> anyhow::Result<String> {
+        // 1. Try to treat workspace_id as a workspace ID first
+        if let Some(id) = workspace_id {
+            if !id.trim().is_empty() {
+                let guard = self
+                    .workspaces
+                    .read()
+                    .map_err(|e| anyhow::anyhow!("RwLock poisoned: {}", e))?;
+                if guard.contains_key(id) {
+                    return Ok(id.to_string());
+                }
+                // Check if workspace_id was passed as a project path
+                let resolved = resolve_path(id);
+                let resolved_str = resolved.to_string_lossy().to_string();
+                for (ws_id, state) in guard.iter() {
+                    if state.workspace.project_path == resolved_str {
+                        return Ok(ws_id.clone());
+                    }
+                }
+            }
+        }
+
+        // 2. Treat project_path as a project path
+        if let Some(path) = project_path {
+            if !path.trim().is_empty() {
+                let resolved = resolve_path(path);
+                let resolved_str = resolved.to_string_lossy().to_string();
+
+                // Check if workspace already exists for this path
+                {
+                    let guard = self
+                        .workspaces
+                        .read()
+                        .map_err(|e| anyhow::anyhow!("RwLock poisoned: {}", e))?;
+                    for (ws_id, state) in guard.iter() {
+                        if state.workspace.project_path == resolved_str {
+                            return Ok(ws_id.clone());
+                        }
+                    }
+                }
+
+                // If path doesn't exist, return error
+                if !resolved.exists() {
+                    return Err(anyhow::anyhow!("Project path NotFound: {}", resolved_str));
+                }
+
+                // Auto-create workspace
+                let folder_name = resolved
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("unknown_project")
+                    .to_string();
+
+                match self.create_workspace(folder_name.clone(), resolved_str.clone()) {
+                    Ok(ws) => return Ok(ws.id),
+                    Err(e) => {
+                        let project_key = get_project_key(&resolved_str);
+                        match self.create_workspace(project_key, resolved_str) {
+                            Ok(ws) => return Ok(ws.id),
+                            Err(_) => return Err(e),
+                        }
+                    }
+                }
+            }
+        }
+
+        Err(anyhow::anyhow!(
+            "Missing workspace reference. Provide workspace_id or project_path."
+        ))
     }
 
     pub fn get_db_pool_and_touch(&self, id: &str) -> Option<DbPool> {
@@ -338,10 +551,11 @@ impl WorkspaceManager {
                     // Loaded but pool is None
                     (state.workspace.project_path.clone(), true)
                 }
-            } else if state.workspace.status == WorkspaceStatus::Idle {
+            } else if state.workspace.status == WorkspaceStatus::Idle
+                || state.workspace.status == WorkspaceStatus::Unloaded
+            {
                 (state.workspace.project_path.clone(), true)
             } else {
-                // Status is Unloaded, return None
                 return None;
             }
         };
@@ -356,6 +570,7 @@ impl WorkspaceManager {
                         // Re-verify the workspace state
                         if state.workspace.status == WorkspaceStatus::Idle
                             || state.workspace.status == WorkspaceStatus::Loaded
+                            || state.workspace.status == WorkspaceStatus::Unloaded
                         {
                             if let Some(ref existing_pool) = state.db_pool {
                                 // Already loaded by another concurrent thread, return it and don't overwrite
@@ -366,6 +581,13 @@ impl WorkspaceManager {
                             }
                             state.workspace.status = WorkspaceStatus::Loaded;
                             state.db_pool = Some(pool.clone());
+                            // Update status in the database
+                            if let Ok(global_conn) = astro_probe_db::establish_connection(get_global_cache_path()) {
+                                let _ = global_conn.execute(
+                                    "UPDATE workspaces SET status = ?1 WHERE id = ?2",
+                                    [&state.workspace.status.to_string(), &id.to_string()],
+                                );
+                            }
                             if let Ok(mut last_acc) = state.last_accessed.write() {
                                 *last_acc = Instant::now();
                             }
@@ -456,17 +678,17 @@ mod tests {
         .unwrap();
 
         // Open connections directly to files to check where the data was written
-        let db_file_a = path_a.join(".astro-probe.db");
-        let db_file_b = path_b.join(".astro-probe.db");
+        let db_file_a = get_db_path(&path_a_str);
+        let db_file_b = get_db_path(&path_b_str);
 
-        let conn_a = rusqlite::Connection::open(db_file_a).unwrap();
+        let conn_a = rusqlite::Connection::open(&db_file_a).unwrap();
         let count_a: i64 = conn_a.query_row(
             "SELECT count(*) FROM call_edges WHERE caller='caller_test' AND callee='callee_test';",
             [],
             |r| r.get(0)
         ).unwrap();
 
-        let conn_b = rusqlite::Connection::open(db_file_b).unwrap();
+        let conn_b = rusqlite::Connection::open(&db_file_b).unwrap();
         let count_b: i64 = conn_b.query_row(
             "SELECT count(*) FROM call_edges WHERE caller='caller_test' AND callee='callee_test';",
             [],
@@ -485,10 +707,17 @@ mod tests {
         // Clean up
         drop(conn);
         drop(returned_pool);
-        drop(manager);
 
-        // Wait briefly for manager's background thread or drop to complete
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        // Delete workspaces from db
+        if let Ok(global_conn) = astro_probe_db::establish_connection(get_global_cache_path()) {
+            let _ = global_conn.execute("DELETE FROM workspaces WHERE id = ?1", [&ws.id]);
+        }
+
+        // Clean up database files manually
+        let parent_a = db_file_a.parent().unwrap();
+        let parent_b = db_file_b.parent().unwrap();
+        let _ = std::fs::remove_dir_all(parent_a);
+        let _ = std::fs::remove_dir_all(parent_b);
 
         let _ = std::fs::remove_dir_all(&path_a);
         let _ = std::fs::remove_dir_all(&path_b);

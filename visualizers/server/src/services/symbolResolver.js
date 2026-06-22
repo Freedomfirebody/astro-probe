@@ -591,11 +591,10 @@ function findVariableOrParameterNode(methodNode, targetVarName) {
 /**
  * SQLite mapping helper try-catch.
  */
-function getPathFromDb(projectPath, outerClassFqn) {
+function getPathFromDb(projectPath, dbPath, outerClassFqn) {
   let db = null;
   try {
-    const dbPath = path.join(projectPath, '.astro-probe.db');
-    if (fs.existsSync(dbPath)) {
+    if (dbPath && fs.existsSync(dbPath)) {
       const Database = require('better-sqlite3');
       db = new Database(dbPath, { readonly: true });
       const stmt = db.prepare('SELECT file_path FROM file_facts_metadata WHERE class_fqn = ?');
@@ -812,7 +811,7 @@ function stripGenerics(typeStr) {
   return result;
 }
 
-function locateJavaFileAndOuterClass(projectPath, classFqn) {
+function locateJavaFileAndOuterClass(projectPath, dbPath, classFqn) {
   const cleanFqn = stripGenerics(classFqn);
   const normalizedFqn = cleanFqn.replace(/\$/g, '.');
   const parts = normalizedFqn.split('.');
@@ -825,7 +824,7 @@ function locateJavaFileAndOuterClass(projectPath, classFqn) {
     const classPart = classParts[0];
 
     // 1. Try SQLite mapping helper
-    let filePath = getPathFromDb(projectPath, candidateOuterClassFqn);
+    let filePath = getPathFromDb(projectPath, dbPath, candidateOuterClassFqn);
     if (filePath && fs.existsSync(filePath)) {
       return {
         filePath,
@@ -880,13 +879,13 @@ function locateJavaFileAndOuterClass(projectPath, classFqn) {
 }
 
 /**
- * Fetches workspace metadata from Rust backend to find project path.
+ * Fetches workspace metadata from Rust backend to find project path and db path.
  */
 async function getWorkspacePath(workspaceId) {
   try {
     const response = await axios.get(`${RUST_BACKEND_URL}/api/workspaces`);
     const workspace = response.data.find(w => w.id === workspaceId || w.id === parseInt(workspaceId, 10));
-    return workspace ? workspace.project_path : null;
+    return workspace ? { projectPath: workspace.project_path, dbPath: workspace.db_path } : null;
   } catch (error) {
     console.error(`[Symbol Resolver] Failed to fetch workspace path: ${error.message}`);
     return null;
@@ -896,7 +895,7 @@ async function getWorkspacePath(workspaceId) {
 /**
  * Resolves a FQN symbol coordinates inside a project path.
  */
-function resolveJavaSymbol(projectPath, fqn) {
+function resolveJavaSymbol(projectPath, dbPath, fqn) {
   const validFqnRegex = /^[a-zA-Z0-9_$.#(),[\]<>]+$/;
   if (!fqn || !validFqnRegex.test(fqn) || fqn.includes('..') || fqn.includes('/') || fqn.includes('\\')) {
     throw new Error(`Invalid symbol FQN: ${fqn}`);
@@ -907,7 +906,7 @@ function resolveJavaSymbol(projectPath, fqn) {
     throw new Error(`Invalid symbol FQN: ${fqn}`);
   }
 
-  const located = locateJavaFileAndOuterClass(projectPath, parsed.classFqn);
+  const located = locateJavaFileAndOuterClass(projectPath, dbPath, parsed.classFqn);
   if (!located || !located.filePath || !fs.existsSync(located.filePath)) {
     throw new Error(`Java source file not found for class: ${parsed.classFqn}`);
   }
