@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Visualizer component coordination",
   "scripts": {
-    "bootstrap": "npm install --prefix server && npm install --prefix frontend && npm install --prefix zed-extension",
+    "bootstrap": "cd server && npm install && cd ../frontend && npm install && cd ../zed-extension && npm install",
     "build:frontend": "npm run build --prefix frontend",
     "build:zed-extension": "npm run build --prefix zed-extension",
     "start:server": "npm start --prefix server",
