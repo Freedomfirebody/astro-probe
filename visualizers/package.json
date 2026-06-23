@@ -11,11 +11,11 @@
   ],
   "scripts": {
     "bootstrap": "npm install",
-    "build:frontend": "cd frontend && npm run build",
-    "build:zed-extension": "cd zed-extension && npm run build",
-    "start:server": "cd server && npm start",
-    "dev:frontend": "cd frontend && npm run dev",
-    "dev:server": "cd server && npm run dev",
+    "build:frontend": "npm run build -w astro-probe-frontend",
+    "build:zed-extension": "npm run build -w astro-probe-lsp-adapter",
+    "start:server": "npm start -w astro-probe-middle-layer",
+    "dev:frontend": "npm run dev -w astro-probe-frontend",
+    "dev:server": "npm run dev -w astro-probe-middle-layer",
     "dev": "concurrently --kill-others \"npm run dev:server\" \"npm run dev:frontend\"",
     "build": "npm run build:frontend && npm run build:zed-extension"
   },
