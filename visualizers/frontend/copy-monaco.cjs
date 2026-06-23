@@ -18,7 +18,10 @@ function copyDir(src, dest) {
 }
 
 try {
-  const monacoSrc = path.resolve(__dirname, 'node_modules/monaco-editor/min/vs');
+  let monacoSrc = path.resolve(__dirname, 'node_modules/monaco-editor/min/vs');
+  if (!fs.existsSync(monacoSrc)) {
+    monacoSrc = path.resolve(__dirname, '../node_modules/monaco-editor/min/vs');
+  }
   const monacoDest = path.resolve(__dirname, 'dist/monaco/vs');
   
   if (fs.existsSync(monacoSrc)) {

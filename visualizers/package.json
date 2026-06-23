@@ -2,8 +2,15 @@
   "name": "astro-probe-visualizers",
   "version": "1.0.0",
   "description": "Visualizer component coordination",
+  "private": true,
+  "workspaces": [
+    "server",
+    "frontend",
+    "zed-extension",
+    "e2e-tests"
+  ],
   "scripts": {
-    "bootstrap": "cd server && npm install && cd ../frontend && npm install && cd ../zed-extension && npm install",
+    "bootstrap": "npm install",
     "build:frontend": "cd frontend && npm run build",
     "build:zed-extension": "cd zed-extension && npm run build",
     "start:server": "cd server && npm start",
@@ -14,6 +21,5 @@
   },
   "dependencies": {
     "concurrently": "^8.2.2"
-  },
-  "private": true
+  }
 }
