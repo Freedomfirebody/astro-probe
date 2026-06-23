@@ -1,0 +1,19 @@
+{
+  "name": "astro-probe-lsp-adapter",
+  "version": "1.0.0",
+  "description": "LSP adapter between Zed and Astro-Probe HTTP daemon",
+  "main": "lsp-adapter.js",
+  "scripts": {
+    "build": "esbuild lsp-adapter.js --bundle --platform=node --outfile=dist/lsp-adapter.js"
+  },
+  "dependencies": {
+    "axios": "^1.6.8",
+    "open": "^8.4.2",
+    "vscode-languageserver": "^9.0.1",
+    "vscode-languageserver-textdocument": "^1.0.11"
+  },
+  "devDependencies": {
+    "esbuild": "^0.20.2"
+  },
+  "private": true
+}

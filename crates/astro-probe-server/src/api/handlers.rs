@@ -31,6 +31,7 @@ pub struct WorkspaceResponse {
 pub struct WorkspaceListItem {
     pub id: String,
     pub name: String,
+    pub project_path: String,
     pub status: String,
 }
 
@@ -112,6 +113,7 @@ pub async fn list_workspaces(State(state): State<AppState>) -> impl IntoResponse
         .map(|ws| WorkspaceListItem {
             id: ws.id,
             name: ws.name,
+            project_path: ws.project_path,
             status: ws.status.to_string(),
         })
         .collect();

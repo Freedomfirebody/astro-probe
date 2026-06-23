@@ -24,7 +24,7 @@ The project utilizes a multi-crate workspace architecture following strict depen
 
 ### Project Architecture
 
-Astro-Probe follows strict one-way dependency rules, organized into 5 focused Cargo crates:
+Astro-Probe follows strict one-way dependency rules, organized into 5 focused Cargo crates and a web visualization system:
 
 ```
 astro-probe (Workspace Root)
@@ -34,8 +34,22 @@ astro-probe (Workspace Root)
 │   ├── astro-probe-java/         # Java frontend (Bytecode analyzer, Maven resolver, Spring mapping)
 │   ├── astro-probe-server/       # Service layer (CLI, REST APIs, and MCP SSE server)
 │   └── astro-probe-tests/        # Integration tests (Milestone validation & Nacos stress tests)
-└── test-samples/                 # Test project samples
+├── test-samples/                 # Test project samples
+└── visualizers/                  # Three-tier visualization and integration system
+    ├── server/                   # Node.js middle-layer Express server & symbol resolver
+    ├── frontend/                 # Vite/React SPA dashboard & DAG visualizer
+    ├── zed-extension/            # Zed lightweight editor plugin for workspace registration & commands
+    └── e2e-tests/                # End-to-end integration and verification test suite
 ```
+
+#### Three-Tier Visualization Architecture
+Astro-Probe features a three-tier visualization system to interactively explore call graphs, data-flow lineage, and Spring routing paths:
+1. **Bottom Layer (Rust Core & Daemon)**: The high-performance Rust static analysis engine (`astro-probe-server`) exposing SQLite-backed REST APIs.
+2. **Middle Layer (Node.js Helper Server)**: Located in `visualizers/server`, this acts as a business logic hub. It proxies commands/graph queries to the Rust backend and runs an AST-based Java parser/symbol resolver to find exact source lines/columns for FQNs.
+3. **Frontend Layer (React Frontend)**: Located in `visualizers/frontend`, a Vite + React Single-Page App utilizing Cytoscape.js/D3.js for interactive DAG visualizers, Monaco Editor for in-context code preview, and a dashboard for workspace management.
+
+There is also editor integration:
+* **Zed Extension**: Located in `visualizers/zed-extension`, it provides workspace registration, manual re-analysis commands, and deep-linking jump-to-line coordination.
 
 #### Crate Dependency Direction
 ```
@@ -61,6 +75,7 @@ astro-probe (Workspace Root)
 #### Prerequisites
 - Rust (1.75+) and Cargo compiler toolchain.
 - Java & Maven configured (for Java analysis).
+- Node.js (18+) and npm package manager (for visualizer components).
 
 #### Build Project
 Compile the workspace in release mode:
@@ -74,11 +89,26 @@ Launch the HTTP/MCP server (listens on port `8080` by default):
 ./target/release/astro-probe-server
 ```
 
+#### Start Visualizer Development Servers
+To start the visualizer in development mode:
+1. Bootstrap the components (installs dependencies in `server`, `frontend`, and `zed-extension`):
+   ```bash
+   cd visualizers
+   npm install
+   npm run bootstrap
+   ```
+2. Start the development servers (concurrently runs both Node.js server and Vite React frontend):
+   ```bash
+   npm run dev
+   ```
+   * The backend helper server runs on `http://localhost:3000`.
+   * The frontend web portal runs on `http://localhost:5173`.
+
 ---
 
 ### Testing & Verification
 
-Astro-Probe includes a comprehensive suite of unit tests, integration tests, and performance benchmarks.
+Astro-Probe includes a comprehensive suite of unit tests, integration tests, performance benchmarks, and end-to-end integration tests.
 
 #### Run Full Test Suite
 ```bash
@@ -90,11 +120,24 @@ cargo test --workspace
 cargo test -p astro-probe-tests --test perf_benchmark test_perf_benchmark_nacos --release -- --nocapture
 ```
 
+#### Run Visualizer E2E Tests
+We provide a comprehensive End-to-End integration test suite under `visualizers/e2e-tests`. You can bootstrap, build production assets, and run the E2E test suite automatically via the PowerShell script:
+```powershell
+./visualizers/run-e2e.ps1
+```
+Or manually run:
+```bash
+cd visualizers/e2e-tests
+npm install
+node test-runner.js
+```
+
 ---
 
 ### Documentation Links
 * 📘 **[User Manual (English)](./docs/usage.md)**
 * 🛠️ **[Developer Manual (English)](./docs/development.md)**
+* 🔌 **[Zed Extension Manual (English/Chinese)](./docs/zed-plugin.md)**
 
 ---
 
@@ -124,7 +167,7 @@ Astro-Probe 是一个采用 Rust 编写的、生产级**多语言静态代码分
 
 ### 项目架构
 
-Astro-Probe 遵循严格的单向依赖准则，由 5 个聚焦特定功能的 crate 组成：
+Astro-Probe 遵循严格的单向依赖准则，由 5 个聚焦特定功能的 crate 以及三层可视化系统组成：
 
 ```
 astro-probe (工作区根目录)
@@ -134,8 +177,22 @@ astro-probe (工作区根目录)
 │   ├── astro-probe-java/         # Java 语言前端 (字节码解析、Maven 解析、Spring 框架分析)
 │   ├── astro-probe-server/       # 对外服务层 (提供 CLI、REST API 以及 MCP SSE 接口)
 │   └── astro-probe-tests/        # 集成测试 crate (全自动 Milestone 测试集与 Nacos 压力测试)
-└── test-samples/                 # 测试样例项目
+├── test-samples/                 # 测试样例项目
+└── visualizers/                  # 三层可视化与集成系统
+    ├── server/                   # Node.js 中层 Express 服务器与符号解析器
+    ├── frontend/                 # Vite/React 单页 Web 应用 (仪表盘与 DAG 可视化)
+    ├── zed-extension/            # Zed 轻量级编辑器插件 (工作区注册与命令交互)
+    └── e2e-tests/                # 端到端集成与验证测试套件
 ```
+
+#### 三层可视化架构
+Astro-Probe 包含一个三层架构的可视化系统，用于交互式展示调用图、数据流血缘以及 Spring 路由路径：
+1. **底层（Rust 核心与守护进程）**：由高性能 Rust 静态分析引擎（`astro-probe-server`）提供基于 SQLite 缓存的 REST API 接口。
+2. **中层（Node.js 辅助服务器）**：位于 `visualizers/server`，作为业务融合枢纽。它向 Rust 后端代理命令和图查询，并运行基于 AST 的 Java 解析器与符号解析器，根据 FQN 定位精确的源码行号与列号。
+3. **前端层（React 前端）**：位于 `visualizers/frontend`，采用 Vite + React 构建的单页 Web 应用。利用 Cytoscape.js/D3.js 提供交互式 DAG 可视化界面，使用 Monaco Editor 实现源码预览，并提供工作区管理仪表盘。
+
+此外，项目还集成了编辑器插件：
+* **Zed 插件**：位于 `visualizers/zed-extension`，提供自动/手动注册工作区、手动触发重新分析命令，以及深层链接（deep-linking）跳转至对应代码行的协调能力。
 
 #### 依赖关系图
 ```
@@ -161,6 +218,7 @@ astro-probe (工作区根目录)
 #### 前提条件
 - 安装 Rust (1.75+) 及 Cargo 编译环境。
 - 配置好 Java/Maven 环境（如需分析 Java 项目）。
+- 安装 Node.js (18+) 及 npm 包管理器（以运行可视化组件）。
 
 #### 编译项目
 在工作区根目录下执行 release 编译：
@@ -174,11 +232,26 @@ cargo build --release
 ./target/release/astro-probe-server
 ```
 
+#### 运行可视化开发服务器
+以开发模式启动可视化服务：
+1. 引导安装依赖（在 `server`、`frontend` 及 `zed-extension` 目录中安装所需依赖）：
+   ```bash
+   cd visualizers
+   npm install
+   npm run bootstrap
+   ```
+2. 启动开发服务器（同时并发运行 Node.js 服务与 Vite React 前端）：
+   ```bash
+   npm run dev
+   ```
+   * 后端辅助服务器默认运行在 `http://localhost:3000`。
+   * 前端 Web 门户默认运行在 `http://localhost:5173`。
+
 ---
 
 ### 测试与验证
 
-项目提供全套单元测试与集成测试，并包含对真实世界大型项目（Nacos）的性能回归压力测试。
+项目提供全套单元测试与集成测试，并包含对真实世界大型项目（Nacos）的性能回归压力测试以及端到端（E2E）集成测试。
 
 #### 运行完整测试套件
 ```bash
@@ -190,6 +263,18 @@ cargo test --workspace
 cargo test -p astro-probe-tests --test perf_benchmark test_perf_benchmark_nacos --release -- --nocapture
 ```
 
+#### 运行可视化 E2E 测试
+我们在 `visualizers/e2e-tests` 下提供了一套完整的端到端集成测试集。你可以直接运行 PowerShell 脚本来自动引导依赖、构建前端生产环境产物并执行 E2E 测试：
+```powershell
+./visualizers/run-e2e.ps1
+```
+或者手动执行以下命令：
+```bash
+cd visualizers/e2e-tests
+npm install
+node test-runner.js
+```
+
 ---
 
 ### 开发与使用手册
@@ -198,6 +283,7 @@ cargo test -p astro-probe-tests --test perf_benchmark test_perf_benchmark_nacos 
 
 * 📘 **[使用手册 (Usage Manual)](./docs/usage.md)**：包含如何创建工作区、执行静态分析、调用 REST API 以及配置 MCP 服务连接。
 * 🛠️ **[开发手册 (Development Manual)](./docs/development.md)**：包含核心 Trait 设计、表 Schema 定义、增量机制说明以及新增语言前端指南。
+* 🔌 **[Zed 插件使用手册 (Zed Extension Manual)](./docs/zed-plugin.md)**：包含插件配置、快捷键说明、工作区自动/手动注册及深层链接跳转说明。
 
 ---
 

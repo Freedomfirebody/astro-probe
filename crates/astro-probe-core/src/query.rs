@@ -37,45 +37,160 @@ pub fn matches_boundary(candidate: &str, query: &str) -> bool {
         return true;
     }
     let prefix = &candidate[..candidate.len() - query.len()];
-    prefix.ends_with('.') || prefix.ends_with('#')
+    prefix.ends_with('.') || prefix.ends_with('#') || prefix.ends_with('$')
+}
+
+struct MethodSignature {
+    prefix: String,
+    param_lists: Vec<Vec<String>>,
+    has_parentheses: bool,
+}
+
+fn get_simple_name(path: &str) -> &str {
+    if let Some(idx) = path.rfind('.') {
+        &path[idx + 1..]
+    } else {
+        path
+    }
+}
+
+fn normalize_type(t: &str) -> String {
+    let mut result = String::new();
+    let mut current_path = String::new();
+
+    for c in t.chars() {
+        if c.is_alphanumeric() || c == '_' || c == '$' || c == '.' {
+            current_path.push(c);
+        } else {
+            if !current_path.is_empty() {
+                result.push_str(get_simple_name(&current_path));
+                current_path.clear();
+            }
+            result.push(c);
+        }
+    }
+    if !current_path.is_empty() {
+        result.push_str(get_simple_name(&current_path));
+    }
+    result
+}
+
+fn parse_signature(s: &str) -> MethodSignature {
+    let s = s.replace(" ", "");
+    let has_parentheses = s.contains('(');
+    
+    if let Some(first_paren) = s.find('(') {
+        let prefix = s[..first_paren].to_string();
+        let params_part = &s[first_paren..];
+        
+        let mut param_lists = Vec::new();
+        let mut chars = params_part.chars().peekable();
+        
+        while let Some(&'(') = chars.peek() {
+            chars.next(); // consume '('
+            let mut current_list = Vec::new();
+            let mut current_param = String::new();
+            let mut depth = 0;
+            
+            while let Some(c) = chars.next() {
+                match c {
+                    '(' => {
+                        depth += 1;
+                        current_param.push(c);
+                    }
+                    ')' => {
+                        if depth == 0 {
+                            if !current_param.is_empty() {
+                                current_list.push(current_param);
+                            }
+                            break;
+                        } else {
+                            depth -= 1;
+                            current_param.push(c);
+                        }
+                    }
+                    '<' => {
+                        depth += 1;
+                        current_param.push(c);
+                    }
+                    '>' => {
+                        if depth > 0 {
+                            depth -= 1;
+                        }
+                        current_param.push(c);
+                    }
+                    ',' => {
+                        if depth == 0 {
+                            if !current_param.is_empty() {
+                                current_list.push(current_param.clone());
+                                current_param = String::new();
+                            }
+                        } else {
+                            current_param.push(c);
+                        }
+                    }
+                    _ => {
+                        current_param.push(c);
+                    }
+                }
+            }
+            param_lists.push(current_list);
+        }
+        
+        MethodSignature {
+            prefix,
+            param_lists,
+            has_parentheses,
+        }
+    } else {
+        MethodSignature {
+            prefix: s.to_string(),
+            param_lists: Vec::new(),
+            has_parentheses,
+        }
+    }
+}
+
+fn matches_param_lists(cand: &[Vec<String>], query: &[Vec<String>]) -> bool {
+    if cand.len() != query.len() {
+        return false;
+    }
+    for (cand_list, query_list) in cand.iter().zip(query.iter()) {
+        if cand_list.len() != query_list.len() {
+            return false;
+        }
+        for (c_param, q_param) in cand_list.iter().zip(query_list.iter()) {
+            if normalize_type(c_param) != normalize_type(q_param) {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 pub fn matches_method_signature(cand_fqn: &str, query: &str) -> bool {
-    let cand_fqn = cand_fqn.replace(" ", "");
-    let query = query.replace(" ", "");
-
-    if query.ends_with("()") {
-        // Rule 2: Empty Parentheses
-        if !cand_fqn.ends_with("()") {
-            return false;
-        }
-        let q_clean = &query[..query.len() - 2];
-        let cand_prefix = match cand_fqn.find('(') {
-            Some(idx) => &cand_fqn[..idx],
-            None => &cand_fqn,
-        };
-        matches_boundary(cand_prefix, q_clean)
-    } else if query.contains('(') {
-        // Rule 3: With Parameters
-        let q_idx = query.find('(').unwrap();
-        let q_prefix = &query[..q_idx];
-        let q_params = &query[q_idx..];
-        if !cand_fqn.ends_with(q_params) {
-            return false;
-        }
-        let cand_prefix = match cand_fqn.find('(') {
-            Some(idx) => &cand_fqn[..idx],
-            None => &cand_fqn,
-        };
-        matches_boundary(cand_prefix, q_prefix)
-    } else {
-        // Rule 1: No Parentheses
-        let cand_prefix = match cand_fqn.find('(') {
-            Some(idx) => &cand_fqn[..idx],
-            None => &cand_fqn,
-        };
-        matches_boundary(cand_prefix, &query)
+    if cand_fqn.is_empty() && query.is_empty() {
+        return true;
     }
+    if cand_fqn.is_empty() || query.is_empty() {
+        if query.is_empty() {
+            return true;
+        }
+        return false;
+    }
+
+    let cand_sig = parse_signature(cand_fqn);
+    let query_sig = parse_signature(query);
+
+    if !matches_boundary(&cand_sig.prefix, &query_sig.prefix) {
+        return false;
+    }
+
+    if !query_sig.has_parentheses {
+        return true;
+    }
+
+    matches_param_lists(&cand_sig.param_lists, &query_sig.param_lists)
 }
 
 pub fn matches_lineage_node(cand_node: &str, query: &str) -> bool {
@@ -269,8 +384,15 @@ pub fn query_lineage_internal(
         final_nodes.insert(node.clone());
         if let Some(hash_idx) = node.find('#') {
             final_nodes.insert(node[hash_idx + 1..].to_string());
-        } else if let Some(dot_idx) = node.rfind('.') {
-            final_nodes.insert(node[dot_idx + 1..].to_string());
+        } else {
+            let clean_node = if let Some(paren_idx) = node.find('(') {
+                &node[..paren_idx]
+            } else {
+                &node
+            };
+            if let Some(dot_idx) = clean_node.rfind('.') {
+                final_nodes.insert(node[dot_idx + 1..].to_string());
+            }
         }
     }
 

@@ -43,6 +43,30 @@ jobs:
       - name: Run Cargo Test
         run: cargo test --workspace
 
+      - name: Setup Node.js (Linux only)
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Node.js Dependencies (Linux only)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          cd visualizers
+          npm install
+
+      - name: Build Visualizer Components (Linux only)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          cd visualizers
+          npm run build
+
+      - name: Run E2E Tests (Linux only)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          cd visualizers/e2e-tests
+          npm test
+
   build-release:
     name: Build Release Binaries
     needs: test
@@ -106,9 +130,57 @@ jobs:
           cd target/${{ matrix.target }}/release
           tar -czf ../../../${{ matrix.asset_name }} astro-probe-server
 
+      - name: Install WASM Target (Linux only)
+        if: matrix.os == 'ubuntu-latest'
+        run: rustup target add wasm32-wasi || rustup target add wasm32-wasip1
+
+      - name: Setup Node.js (Linux only)
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build and Package Visualizer & Zed Extension (Linux only)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          # 1. Install dependencies and build visualizer components
+          cd visualizers
+          npm install
+          npm run build
+          
+          # 2. Package visualizer middle/front tier
+          tar -czf ../astro-probe-visualizer.tar.gz package.json server/package.json server/src frontend/dist
+          
+          # 3. Build Zed Extension WASM
+          cd zed-extension
+          cargo build --release --target wasm32-wasi || cargo build --release --target wasm32-wasip1
+          
+          # 4. Assemble and Package Zed Extension
+          cd ../..
+          mkdir zed-extension-package
+          cp visualizers/zed-extension/extension.toml zed-extension-package/
+          if [ -f visualizers/zed-extension/target/wasm32-wasi/release/astro_probe_zed.wasm ]; then
+            cp visualizers/zed-extension/target/wasm32-wasi/release/astro_probe_zed.wasm zed-extension-package/extension.wasm
+          else
+            cp visualizers/zed-extension/target/wasm32-wasip1/release/astro_probe_zed.wasm zed-extension-package/extension.wasm
+          fi
+          cp visualizers/zed-extension/dist/lsp-adapter.js zed-extension-package/lsp-adapter.js
+          cp -r visualizers/zed-extension/keymaps zed-extension-package/keymaps
+          tar -czf astro-probe-zed-extension.tar.gz -C zed-extension-package extension.toml extension.wasm lsp-adapter.js keymaps
+
       - name: Upload Release Asset
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ matrix.asset_name }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Visualizer & Zed Extension Assets (Linux only)
+        if: matrix.os == 'ubuntu-latest'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            astro-probe-visualizer.tar.gz
+            astro-probe-zed-extension.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
