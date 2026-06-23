@@ -54,9 +54,6 @@ jobs:
         run: |
           cd visualizers
           npm install
-          npm run bootstrap
-          cd e2e-tests
-          npm install
 
       - name: Build Visualizer Components (Linux only)
         if: matrix.os == 'ubuntu-latest'
@@ -149,7 +146,6 @@ jobs:
           # 1. Install dependencies and build visualizer components
           cd visualizers
           npm install
-          npm run bootstrap
           npm run build
           
           # 2. Package visualizer middle/front tier
