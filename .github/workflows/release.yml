@@ -53,7 +53,7 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           cd visualizers
-          npm install
+          npm ci
 
       - name: Build Visualizer Components (Linux only)
         if: matrix.os == 'ubuntu-latest'
@@ -145,7 +145,7 @@ jobs:
         run: |
           # 1. Install dependencies and build visualizer components
           cd visualizers
-          npm install
+          npm ci
           npm run build
           
           # 2. Package visualizer middle/front tier
