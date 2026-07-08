@@ -315,7 +315,7 @@ app.get('/health', (req, res) => {
 });
 
 // Start the server
-const server = app.listen(PORT, () => {
+const server = app.listen(PORT, '127.0.0.1', () => {
   console.log(`Mock Middle Layer Server running on port ${PORT}`);
 });
 

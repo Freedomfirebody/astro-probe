@@ -160,7 +160,7 @@ async function main() {
 
     // Start Rust Daemon on resolved port
     console.log('Starting Rust Daemon...');
-    rustDaemonProcess = spawn(binaryPath, ['--port', String(rustPort)], {
+    rustDaemonProcess = spawn(binaryPath, ['--port', String(rustPort), '--mode', 'http'], {
       cwd: PROJECT_ROOT,
       stdio: 'inherit',
       detached: process.platform !== 'win32',
