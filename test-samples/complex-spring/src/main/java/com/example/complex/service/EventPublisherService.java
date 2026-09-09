@@ -23,16 +23,19 @@ public class EventPublisherService {
 
     public void publishOrderCreated(Order order) {
         logger.info("Publishing OrderCreatedEvent for order: {}", order.getId());
-        applicationEventPublisher.publishEvent(new OrderCreatedEvent(this, order));
+        OrderCreatedEvent event = new OrderCreatedEvent(this, order);
+        applicationEventPublisher.publishEvent(event);
     }
 
     public void publishOrderStatusChanged(Long orderId, OrderStatus oldStatus, OrderStatus newStatus) {
         logger.info("Publishing OrderStatusChangedEvent for order {}: {} -> {}", orderId, oldStatus, newStatus);
-        applicationEventPublisher.publishEvent(new OrderStatusChangedEvent(this, orderId, oldStatus, newStatus));
+        OrderStatusChangedEvent event = new OrderStatusChangedEvent(this, orderId, oldStatus, newStatus);
+        applicationEventPublisher.publishEvent(event);
     }
 
     public void publishStockDepleted(Long productId, String productName) {
         logger.info("Publishing StockDepletedEvent for product {}: {}", productId, productName);
-        applicationEventPublisher.publishEvent(new StockDepletedEvent(this, productId, productName));
+        StockDepletedEvent event = new StockDepletedEvent(this, productId, productName);
+        applicationEventPublisher.publishEvent(event);
     }
 }

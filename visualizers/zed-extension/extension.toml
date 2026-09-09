@@ -1,0 +1,11 @@
+id = "astro-probe"
+name = "Astro-Probe"
+version = "1.0.0"
+schema_version = 1
+description = "Zed integration for Astro-Probe code lineage and call-graph visualization."
+authors = ["Astro-Probe Team <info@astro-probe.io>"]
+repository = "https://github.com/Freedomfirebody/astro-probe"
+
+[language_servers.astro-probe]
+name = "astro-probe"
+languages = ["Java"]

@@ -100,20 +100,20 @@ async fn save_dbs_for_inspection() {
         .join("complex-spring");
 
     let complex_guard = TempProjectGuard::new(&complex_path, "complex_spring_verify");
-    let db_path = complex_guard.temp_dir.join(".astro-probe.db");
-    if db_path.exists() {
-        std::fs::remove_file(&db_path).ok();
-    }
-
-    {
+    let db_path = {
         let manager = WorkspaceManager::new();
-        let _ws = manager
+        let ws_list = manager.list_workspaces();
+        if let Some(existing) = ws_list.iter().find(|w| w.name == "complex-spring-verify") {
+            manager.delete_workspace(&existing.id);
+        }
+        let ws = manager
             .create_workspace(
                 "complex-spring-verify".to_string(),
                 complex_guard.temp_dir.to_string_lossy().to_string(),
             )
             .expect("Failed to create complex-spring workspace");
-    }
+        PathBuf::from(&ws.db_path)
+    };
 
     // Checkpoint DB
     checkpoint_db(&db_path);
@@ -140,20 +140,20 @@ async fn save_dbs_for_inspection() {
         .join("medium-spring");
 
     let medium_guard = TempProjectGuard::new(&medium_path, "medium_spring_verify");
-    let db_path2 = medium_guard.temp_dir.join(".astro-probe.db");
-    if db_path2.exists() {
-        std::fs::remove_file(&db_path2).ok();
-    }
-
-    {
+    let db_path2 = {
         let manager2 = WorkspaceManager::new();
-        let _ws2 = manager2
+        let ws_list = manager2.list_workspaces();
+        if let Some(existing) = ws_list.iter().find(|w| w.name == "medium-spring-verify") {
+            manager2.delete_workspace(&existing.id);
+        }
+        let ws2 = manager2
             .create_workspace(
                 "medium-spring-verify".to_string(),
                 medium_guard.temp_dir.to_string_lossy().to_string(),
             )
             .expect("Failed to create medium-spring workspace");
-    }
+        PathBuf::from(&ws2.db_path)
+    };
 
     // Checkpoint DB
     checkpoint_db(&db_path2);
@@ -168,4 +168,16 @@ async fn save_dbs_for_inspection() {
         std::fs::remove_file(&dest_medium).ok();
     }
     std::fs::copy(&db_path2, &dest_medium).unwrap();
+
+    // Clean up workspaces
+    {
+        let manager = WorkspaceManager::new();
+        let list = manager.list_workspaces();
+        if let Some(w) = list.iter().find(|w| w.name == "complex-spring-verify") {
+            manager.delete_workspace(&w.id);
+        }
+        if let Some(w) = list.iter().find(|w| w.name == "medium-spring-verify") {
+            manager.delete_workspace(&w.id);
+        }
+    }
 }

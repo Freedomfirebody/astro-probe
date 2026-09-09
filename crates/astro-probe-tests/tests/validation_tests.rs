@@ -617,3 +617,247 @@ async fn test_validation_medium_spring_call_chains() {
         std::fs::remove_file(&db_path).ok();
     }
 }
+
+#[test]
+fn test_adversarial_fqn_demangling() {
+    let conn = Connection::open_in_memory().unwrap();
+    astro_probe_db::init_db(&conn).unwrap();
+
+    let edges = vec![
+        // 1. Generic class name
+        (
+            "com.example.service.MyService<T>#var1",
+            "com.example.service.MyService<T>",
+            "DATA",
+        ),
+        // 2. Empty parentheses method
+        (
+            "com.example.Class.method()",
+            "com.example.Class.method()#ret",
+            "DATA",
+        ),
+        // 3. Generic parameters
+        (
+            "com.example.Class.method(java.util.List<java.lang.String>)",
+            "com.example.Class.method(java.util.List<java.lang.String>)#param",
+            "DATA",
+        ),
+        // 4. Nested generics
+        (
+            "com.example.Class.method(java.util.Map<java.lang.String,java.util.List<java.lang.Integer>>)",
+            "com.example.Class.method(java.util.Map<java.lang.String,java.util.List<java.lang.Integer>>)#param",
+            "DATA",
+        ),
+        // 5. Return type prefix
+        (
+            "public void com.example.Class.method(int)",
+            "public void com.example.Class.method(int)#x",
+            "DATA",
+        ),
+        // 6. Return type suffix
+        (
+            "com.example.Class.method(int)void",
+            "com.example.Class.method(int)void#y",
+            "DATA",
+        ),
+        // 7. Kotlin/Scala style return type
+        (
+            "com.example.Class.method(int) : void",
+            "com.example.Class.method(int) : void#z",
+            "DATA",
+        ),
+    ];
+
+    for (from, to, edge_type) in edges {
+        conn.execute(
+            "INSERT INTO lineage_edges (from_node, to_node, edge_type) VALUES (?1, ?2, ?3)",
+            [from, to, edge_type],
+        )
+        .unwrap();
+    }
+
+    // Query 1: MyService<T>
+    let resp = astro_probe_core::query::query_lineage_internal(&conn, "MyService<T>", "downstream").unwrap();
+    println!("MyService<T> nodes: {:?}", resp.nodes);
+    assert!(resp.nodes.contains(&"com.example.service.MyService<T>".to_string()));
+    assert!(resp.nodes.contains(&"MyService<T>".to_string()));
+    assert!(resp.nodes.contains(&"com.example.service.MyService<T>#var1".to_string()));
+    assert!(resp.nodes.contains(&"var1".to_string()));
+
+    // Query 2: method()
+    let resp = astro_probe_core::query::query_lineage_internal(&conn, "method()", "downstream").unwrap();
+    println!("method() nodes: {:?}", resp.nodes);
+    assert!(resp.nodes.contains(&"com.example.Class.method()".to_string()));
+    assert!(resp.nodes.contains(&"method()".to_string()));
+    assert!(resp.nodes.contains(&"com.example.Class.method()#ret".to_string()));
+    assert!(resp.nodes.contains(&"ret".to_string()));
+
+    // Query 3: method(java.util.List<java.lang.String>)
+    let resp = astro_probe_core::query::query_lineage_internal(&conn, "method(java.util.List<java.lang.String>)", "downstream").unwrap();
+    println!("method(List) nodes: {:?}", resp.nodes);
+    assert!(resp.nodes.contains(&"com.example.Class.method(java.util.List<java.lang.String>)".to_string()));
+    assert!(resp.nodes.contains(&"method(java.util.List<java.lang.String>)".to_string()));
+    assert!(resp.nodes.contains(&"com.example.Class.method(java.util.List<java.lang.String>)#param".to_string()));
+    assert!(resp.nodes.contains(&"param".to_string()));
+
+    // Query 4: method(java.util.Map<java.lang.String,java.util.List<java.lang.Integer>>)
+    let resp = astro_probe_core::query::query_lineage_internal(&conn, "method(java.util.Map<java.lang.String,java.util.List<java.lang.Integer>>)", "downstream").unwrap();
+    assert!(resp.nodes.contains(&"method(java.util.Map<java.lang.String,java.util.List<java.lang.Integer>>)".to_string()));
+
+    // Query 5: method(int) - should match prefix style "public void com.example.Class.method(int)"
+    let resp = astro_probe_core::query::query_lineage_internal(&conn, "method(int)", "downstream").unwrap();
+    println!("method(int) nodes: {:?}", resp.nodes);
+    assert!(resp.nodes.contains(&"public void com.example.Class.method(int)".to_string()));
+    assert!(resp.nodes.contains(&"method(int)".to_string()));
+}
+
+#[tokio::test]
+async fn test_adversarial_workspace_deletion_wal_locks() {
+    let temp_dir = std::env::temp_dir();
+    let ws_dir = temp_dir.join(format!("ws_delete_test_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&ws_dir).unwrap();
+
+    let manager = WorkspaceManager::new();
+    let ws = manager
+        .create_workspace("delete_test_ws".to_string(), ws_dir.to_string_lossy().to_string())
+        .unwrap();
+
+    let pool = manager.get_db_pool_and_touch(&ws.id).unwrap();
+    {
+        let conn = pool.get().unwrap();
+        conn.execute("CREATE TABLE IF NOT EXISTS test_table (id INTEGER PRIMARY KEY);", []).unwrap();
+        conn.execute("INSERT INTO test_table (id) VALUES (1);", []).unwrap();
+        conn.execute_batch("PRAGMA wal_checkpoint(FULL);").unwrap();
+    }
+
+    let db_path = PathBuf::from(&ws.db_path);
+    let parent = db_path.parent().unwrap().to_path_buf();
+    let wal_path = parent.join("astro-probe.db-wal");
+    let shm_path = parent.join("astro-probe.db-shm");
+
+    assert!(db_path.exists());
+
+    // Scenario A: Concurrent reader holds connection for 200ms.
+    // Deletion should succeed because of the 5x 100ms retry loop.
+    let pool_clone = pool.clone();
+    let reader_handle = std::thread::spawn(move || {
+        let conn = pool_clone.get().unwrap();
+        conn.execute("BEGIN IMMEDIATE TRANSACTION;", []).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        conn.execute("ROLLBACK;", []).ok();
+        drop(conn);
+    });
+
+    drop(pool);
+
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let deleted = manager.delete_workspace(&ws.id);
+    assert!(deleted, "Workspace deletion should return true");
+
+    reader_handle.join().unwrap();
+
+    assert!(!db_path.exists(), "DB file should be deleted");
+    assert!(!wal_path.exists(), "WAL file should be deleted");
+    assert!(!shm_path.exists(), "SHM file should be deleted");
+
+    let _ = std::fs::remove_dir_all(&ws_dir);
+    let _ = std::fs::remove_dir_all(&parent);
+}
+
+#[tokio::test]
+async fn test_adversarial_workspace_deletion_wal_locks_timeout() {
+    let temp_dir = std::env::temp_dir();
+    let ws_dir = temp_dir.join(format!("ws_delete_test_timeout_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&ws_dir).unwrap();
+
+    let manager = WorkspaceManager::new();
+    let ws = manager
+        .create_workspace("delete_test_ws_timeout".to_string(), ws_dir.to_string_lossy().to_string())
+        .unwrap();
+
+    let pool = manager.get_db_pool_and_touch(&ws.id).unwrap();
+    {
+        let conn = pool.get().unwrap();
+        conn.execute("CREATE TABLE IF NOT EXISTS test_table (id INTEGER PRIMARY KEY);", []).unwrap();
+        conn.execute("INSERT INTO test_table (id) VALUES (1);", []).unwrap();
+        conn.execute_batch("PRAGMA wal_checkpoint(FULL);").unwrap();
+    }
+
+    let db_path = PathBuf::from(&ws.db_path);
+    let parent = db_path.parent().unwrap().to_path_buf();
+
+    // Scenario B: Concurrent reader holds connection for 8000ms.
+    // Deletion should fail to remove files because it exceeds the 20x100ms (2000ms) retry duration.
+    let pool_clone = pool.clone();
+    let reader_handle = std::thread::spawn(move || {
+        let conn = pool_clone.get().unwrap();
+        conn.execute("BEGIN IMMEDIATE TRANSACTION;", []).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(8000));
+        conn.execute("ROLLBACK;", []).ok();
+        drop(conn);
+    });
+
+    drop(pool);
+
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let deleted = manager.delete_workspace(&ws.id);
+    assert!(deleted, "Workspace deletion should remove it from manager");
+
+    reader_handle.join().unwrap();
+
+    #[cfg(target_os = "windows")]
+    assert!(db_path.exists(), "DB file should still exist on Windows since lock was held for 8000ms");
+
+    let _ = std::fs::remove_dir_all(&ws_dir);
+    let _ = std::fs::remove_dir_all(&parent);
+}
+
+#[tokio::test]
+async fn test_adversarial_idle_timeout_threshold() {
+    let original_val = std::env::var("ASTRO_PROBE_IDLE_TIMEOUT_SECS").ok();
+    std::env::set_var("ASTRO_PROBE_IDLE_TIMEOUT_SECS", "1");
+
+    let temp_dir = std::env::temp_dir();
+    let ws_dir = temp_dir.join(format!("ws_timeout_test_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&ws_dir).unwrap();
+
+    let manager = WorkspaceManager::new();
+    let ws = manager
+        .create_workspace("timeout_test_ws".to_string(), ws_dir.to_string_lossy().to_string())
+        .unwrap();
+
+    assert_eq!(
+        ws.status,
+        astro_probe_server::kernel::workspace::WorkspaceStatus::Loaded
+    );
+
+    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+
+    let workspaces = manager.list_workspaces();
+    let ws_status = workspaces.iter().find(|w| w.id == ws.id).unwrap().status;
+    assert_eq!(
+        ws_status,
+        astro_probe_server::kernel::workspace::WorkspaceStatus::Loaded,
+        "Workspace should not transition to Idle at 3 seconds because minimum threshold of 5 seconds is enforced"
+    );
+
+    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+
+    let workspaces = manager.list_workspaces();
+    let ws_status = workspaces.iter().find(|w| w.id == ws.id).unwrap().status;
+    assert_eq!(
+        ws_status,
+        astro_probe_server::kernel::workspace::WorkspaceStatus::Idle,
+        "Workspace should transition to Idle after 5 seconds threshold"
+    );
+
+    manager.delete_workspace(&ws.id);
+    let _ = std::fs::remove_dir_all(&ws_dir);
+
+    if let Some(val) = original_val {
+        std::env::set_var("ASTRO_PROBE_IDLE_TIMEOUT_SECS", val);
+    } else {
+        std::env::remove_var("ASTRO_PROBE_IDLE_TIMEOUT_SECS");
+    }
+}
+

@@ -29,6 +29,7 @@ pub struct Workspace {
     pub name: String,
     pub project_path: String,
     pub status: WorkspaceStatus,
+    pub db_path: String,
 }
 
 #[derive(Clone)]

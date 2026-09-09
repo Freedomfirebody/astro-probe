@@ -122,10 +122,11 @@ impl McpServer {
                                 "type": "object",
                                 "properties": {
                                     "workspace_id": { "type": "string" },
+                                    "project_path": { "type": "string" },
                                     "method": { "type": "string" },
                                     "direction": { "type": "string", "enum": ["incoming", "outgoing"] }
                                 },
-                                "required": ["workspace_id", "method", "direction"]
+                                "required": ["method", "direction"]
                             }
                         },
                         {
@@ -135,10 +136,11 @@ impl McpServer {
                                 "type": "object",
                                 "properties": {
                                     "workspace_id": { "type": "string" },
+                                    "project_path": { "type": "string" },
                                     "node": { "type": "string" },
                                     "direction": { "type": "string", "enum": ["upstream", "downstream"] }
                                 },
-                                "required": ["workspace_id", "node", "direction"]
+                                "required": ["node", "direction"]
                             }
                         },
                         {
@@ -148,10 +150,10 @@ impl McpServer {
                                 "type": "object",
                                 "properties": {
                                     "workspace_id": { "type": "string" },
+                                    "project_path": { "type": "string" },
                                     "path": { "type": "string" },
                                     "http_method": { "type": "string" }
-                                },
-                                "required": ["workspace_id"]
+                                }
                             }
                         }
                     ]
@@ -291,10 +293,13 @@ impl McpServer {
                 }
             }
             "query_call_graph" => {
-                let workspace_id = args
-                    .get("workspace_id")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| "Missing required parameter: workspace_id".to_string())?;
+                let ws_id_arg = args.get("workspace_id").and_then(|v| v.as_str());
+                let proj_path_arg = args.get("project_path").and_then(|v| v.as_str());
+                let workspace_id = self
+                    .manager
+                    .get_or_create_workspace_id(ws_id_arg, proj_path_arg)
+                    .map_err(|e| e.to_string())?;
+
                 let method = args
                     .get("method")
                     .and_then(|v| v.as_str())
@@ -306,7 +311,7 @@ impl McpServer {
 
                 let pool = self
                     .manager
-                    .get_db_pool_and_touch(workspace_id)
+                    .get_db_pool_and_touch(&workspace_id)
                     .ok_or_else(|| "Workspace not found".to_string())?;
 
                 let conn = pool
@@ -326,10 +331,13 @@ impl McpServer {
                 }
             }
             "query_lineage" => {
-                let workspace_id = args
-                    .get("workspace_id")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| "Missing required parameter: workspace_id".to_string())?;
+                let ws_id_arg = args.get("workspace_id").and_then(|v| v.as_str());
+                let proj_path_arg = args.get("project_path").and_then(|v| v.as_str());
+                let workspace_id = self
+                    .manager
+                    .get_or_create_workspace_id(ws_id_arg, proj_path_arg)
+                    .map_err(|e| e.to_string())?;
+
                 let node = args
                     .get("node")
                     .and_then(|v| v.as_str())
@@ -341,7 +349,7 @@ impl McpServer {
 
                 let pool = self
                     .manager
-                    .get_db_pool_and_touch(workspace_id)
+                    .get_db_pool_and_touch(&workspace_id)
                     .ok_or_else(|| "Workspace not found".to_string())?;
 
                 let conn = pool
@@ -361,16 +369,19 @@ impl McpServer {
                 }
             }
             "query_routes" => {
-                let workspace_id = args
-                    .get("workspace_id")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| "Missing required parameter: workspace_id".to_string())?;
+                let ws_id_arg = args.get("workspace_id").and_then(|v| v.as_str());
+                let proj_path_arg = args.get("project_path").and_then(|v| v.as_str());
+                let workspace_id = self
+                    .manager
+                    .get_or_create_workspace_id(ws_id_arg, proj_path_arg)
+                    .map_err(|e| e.to_string())?;
+
                 let path_filter = args.get("path").and_then(|v| v.as_str());
                 let http_method_filter = args.get("http_method").and_then(|v| v.as_str());
 
                 let pool = self
                     .manager
-                    .get_db_pool_and_touch(workspace_id)
+                    .get_db_pool_and_touch(&workspace_id)
                     .ok_or_else(|| "Workspace not found".to_string())?;
 
                 let conn = pool

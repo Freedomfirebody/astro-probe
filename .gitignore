@@ -37,3 +37,7 @@ crates/astro-probe-tests/tests/scratch.rs
 
 # IDE Configuration Files
 .idea/
+
+# Node.js dependencies and builds
+**/node_modules/
+**/dist/

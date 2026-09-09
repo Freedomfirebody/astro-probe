@@ -1,0 +1,9 @@
+[
+  {
+    "context": "Editor",
+    "bindings": {
+      "ctrl-alt-a": "astro-probe:trigger-reanalysis",
+      "ctrl-alt-v": "astro-probe:open-visualizer"
+    }
+  }
+]
