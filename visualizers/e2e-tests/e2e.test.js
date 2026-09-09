@@ -329,51 +329,58 @@ test('Tier 2.5: Integration Boundaries - Query Non-existent Lineage node', async
 // TIER 3: CROSS-FEATURE COMBINATIONS
 // ==========================================
 
-test('Tier 3.1: Stopped Workspace + Call Graph Query', async () => {
-  // Stop workspace first
-  await axios.post(`${MIDDLE_LAYER_URL}/api/workspaces/${activeWorkspaceId}/stop`);
-
-  // Attempt to query Call Graph
-  try {
-    await axios.get(`${MIDDLE_LAYER_URL}/api/workspaces/${activeWorkspaceId}/call-graph`, {
-      params: {
-        method: 'UserController.getUserById',
-        direction: 'outgoing'
-      }
-    });
-    throw new Error('Expected query on stopped workspace to fail with 404');
-  } catch (error) {
-    if (!error.response || error.response.status !== 404) {
-      throw new Error(`Expected status 404, got ${error.response ? error.response.status : error.message}`);
-    }
+test('Tier 3.1: Stopped Workspace + Query Auto-Resume', async () => {
+  const stopResponse = await axios.post(`${MIDDLE_LAYER_URL}/api/workspaces/${activeWorkspaceId}/stop`);
+  if (stopResponse.data.status !== 'unloaded') {
+    throw new Error(`Expected stopped workspace to be unloaded, got '${stopResponse.data.status}'`);
   }
 
-  // Restore state for next tests
-  await axios.post(`${MIDDLE_LAYER_URL}/api/workspaces/${activeWorkspaceId}/start`);
+  // Queries auto-load unloaded workspaces, as covered by the Rust headless regression test.
+  const queryResponse = await axios.get(`${MIDDLE_LAYER_URL}/api/workspaces/${activeWorkspaceId}/call-graph`, {
+    params: {
+      method: 'UserController.getUserById',
+      direction: 'outgoing'
+    }
+  });
+  if (queryResponse.status !== 200 || !queryResponse.data.edges.some(e => e.callee.includes('UserService') && e.callee.includes('findById'))) {
+    throw new Error('Expected auto-resumed workspace to preserve the UserController to UserService call graph');
+  }
+
+  const listResponse = await axios.get(`${MIDDLE_LAYER_URL}/api/workspaces`);
+  const workspace = listResponse.data.find(w => w.id === activeWorkspaceId);
+  if (!workspace || workspace.status !== 'loaded') {
+    throw new Error(`Expected queried workspace to auto-resume to loaded, got '${workspace ? workspace.status : 'not found'}'`);
+  }
 });
 
 test('Tier 3.2: Deleted Workspace + Symbol Resolution', async () => {
-  // Create a temporary workspace to delete
-  const payload = {
-    name: 'temp-workspace-delete',
-    project_path: SIMPLE_SPRING_PATH
-  };
-  const createResponse = await axios.post(`${MIDDLE_LAYER_URL}/api/workspaces`, payload);
-  const tempId = createResponse.data.id;
-
-  // Delete it
-  await axios.delete(`${MIDDLE_LAYER_URL}/api/workspaces/${tempId}`);
-
-  // Query symbol resolution
+  // Database paths are derived from project paths, so deletion needs its own project copy.
+  const tempProjectDir = fs.mkdtempSync(path.join(PROJECT_ROOT, 'target', 'temp_delete_'));
   try {
-    await axios.get(`${MIDDLE_LAYER_URL}/api/workspaces/${tempId}/symbol`, {
-      params: { fqn: 'com.example.simple.controller.UserController' }
+    fs.cpSync(SIMPLE_SPRING_PATH, tempProjectDir, { recursive: true });
+    const createResponse = await axios.post(`${MIDDLE_LAYER_URL}/api/workspaces`, {
+      name: 'temp-workspace-delete',
+      project_path: tempProjectDir
     });
-    throw new Error('Expected symbol resolution on deleted workspace to fail');
-  } catch (error) {
-    if (!error.response || error.response.status !== 404) {
-      throw new Error(`Expected 404, got ${error.response ? error.response.status : error.message}`);
+    const tempId = createResponse.data.id;
+    if (path.resolve(createResponse.data.project_path) === SIMPLE_SPRING_PATH) {
+      throw new Error('Deletion test must use a project path separate from the active workspace');
     }
+
+    await axios.delete(`${MIDDLE_LAYER_URL}/api/workspaces/${tempId}`);
+
+    try {
+      await axios.get(`${MIDDLE_LAYER_URL}/api/workspaces/${tempId}/symbol`, {
+        params: { fqn: 'com.example.simple.controller.UserController' }
+      });
+      throw new Error('Expected symbol resolution on deleted workspace to fail');
+    } catch (error) {
+      if (!error.response || error.response.status !== 404) {
+        throw new Error(`Expected 404, got ${error.response ? error.response.status : error.message}`);
+      }
+    }
+  } finally {
+    fs.rmSync(tempProjectDir, { recursive: true, force: true });
   }
 });
 
