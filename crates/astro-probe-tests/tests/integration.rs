@@ -393,15 +393,20 @@ public class A {
         .unwrap();
     assert_eq!(a_exists, 1);
 
+    // Keep timing as an evaluation metric; correctness is asserted above.
+    let incremental_ratio = re_duration.as_secs_f64() / initial_duration.as_secs_f64();
+    let assessment = if re_duration < initial_duration {
+        "within_reference"
+    } else {
+        "above_reference"
+    };
     println!(
-        "Initial run: {:?}, Re-analysis run: {:?}",
-        initial_duration, re_duration
+        "[PERF] incremental-analysis: initial_ms={:.3}, incremental_ms={:.3}, incremental_ratio={:.2}%, reference_ratio=100%, assessment={} (informational)",
+        initial_duration.as_secs_f64() * 1000.0,
+        re_duration.as_secs_f64() * 1000.0,
+        incremental_ratio * 100.0,
+        assessment
     );
-    if re_duration >= initial_duration {
-        println!(
-            "WARNING: Incremental re-analysis was not faster than initial analysis on this run (expected on tiny projects due to SQLite init overhead and platform noise)."
-        );
-    }
 
     drop(conn2);
     drop(pool2);

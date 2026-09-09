@@ -92,7 +92,7 @@ Development ──> Cargo Clippy ──> Cargo Test ──> Code Auditor (PASS) 
 
 #### Local Quality Tasks
 * **Clippy lint check**: Run `cargo clippy --workspace --all-targets -- -D warnings`. Warnings are treated as compile errors.
-* **Workspace test suite**: Run `cargo test --workspace` and verify that both unit and performance benchmark tests pass cleanly.
+* **Workspace test suite**: Run `cargo test --workspace -- --show-output`. Functional assertions must pass. Performance tests still run and report `[PERF]` measurements, reference values, and assessments; exceeding a performance reference does not fail CI/CD. Benchmark setup or execution errors remain test failures.
 
 ---
 

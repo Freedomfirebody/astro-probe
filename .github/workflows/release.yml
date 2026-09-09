@@ -41,7 +41,7 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Run Cargo Test
-        run: cargo test --workspace
+        run: cargo test --workspace -- --show-output
 
       - name: Setup Node.js (Linux only)
         if: matrix.os == 'ubuntu-latest'
@@ -60,6 +60,10 @@ jobs:
         run: |
           cd visualizers
           npm run build
+
+      - name: Build E2E Rust Daemon (Linux only)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo build --bin astro-probe-server
 
       - name: Run E2E Tests (Linux only)
         if: matrix.os == 'ubuntu-latest'

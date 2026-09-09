@@ -164,19 +164,20 @@ async fn test_perf_benchmark_medium_spring() {
     manager.delete_workspace(&ws.id);
     manager.delete_workspace(&ws_incremental.id);
 
-    let speedup = incremental_duration.as_secs_f64() / initial_duration.as_secs_f64();
-    println!("medium-spring Speedup ratio: {:.2}%", speedup * 100.0);
-
-    let limit = if cfg!(debug_assertions) {
-        initial_duration * 9 / 10 // <90% in debug mode (safe buffer for CI environments)
+    // Performance references are reported for evaluation, never used as pass/fail gates.
+    let incremental_ratio = incremental_duration.as_secs_f64() / initial_duration.as_secs_f64();
+    let reference_ratio = if cfg!(debug_assertions) { 0.9 } else { 0.5 };
+    let assessment = if incremental_ratio < reference_ratio {
+        "within_reference"
     } else {
-        initial_duration / 2 // <50% in release mode
+        "above_reference"
     };
-
-    if incremental_duration >= limit {
-        println!(
-            "WARNING: Incremental re-analysis ({:?}) was not faster than the limit ({:?}) on this run. This is expected in virtualized or high-load CI environments due to database initialization and I/O noise.",
-            incremental_duration, limit
-        );
-    }
+    println!(
+        "[PERF] medium-spring: initial_ms={:.3}, incremental_ms={:.3}, incremental_ratio={:.2}%, reference_ratio={:.0}%, assessment={} (informational)",
+        initial_duration.as_secs_f64() * 1000.0,
+        incremental_duration.as_secs_f64() * 1000.0,
+        incremental_ratio * 100.0,
+        reference_ratio * 100.0,
+        assessment
+    );
 }
